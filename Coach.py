@@ -19,6 +19,8 @@ class Coach:
         self.args = args
         self.writer = writer  # --- 新增: 保存 writer ---
         self.pnet = self.nnet.__class__(self.game, self.nnet.nnet_class, self.args)
+        # --- 新增: 初始化一个用于对比的初始网络 ---
+        self.initial_net = self.nnet.__class__(self.game, self.nnet.nnet_class, self.args)
         self.train_examples_history = []
         self.skip_first_self_play = False
 
@@ -26,23 +28,15 @@ class Coach:
         """Helper function to print the board state for debugging during self-play."""
         print("\n" + "=" * 30, file=sys.stderr)
         print(f"[SELF-PLAY DEBUG] Round: {round_num}, Player {player} took action {action}", file=sys.stderr)
-
-        # Channel 0: Black Stones (X)
         print("--- Black Stones (X) ---", file=sys.stderr)
         p_b = np.where(board[0] == 1, 'X', '.')
         print(p_b, file=sys.stderr)
-
-        # Channel 1: White Stones (O)
         print("--- White Stones (O) ---", file=sys.stderr)
         p_w = np.where(board[1] == 1, 'O', '.')
         print(p_w, file=sys.stderr)
-
-        # Channel 2: Black Control (+)
         print("--- Black Control (+) ---", file=sys.stderr)
         c_b = np.where(board[2] == 1, 'x', '.')
         print(c_b, file=sys.stderr)
-
-        # Channel 3: White Control (-)
         print("--- White Control (-) ---", file=sys.stderr)
         c_w = np.where(board[3] == 1, 'o', '.')
         print(c_w, file=sys.stderr)
@@ -82,11 +76,6 @@ class Coach:
             seeds = np.random.randint(0, 2 ** 32 - 1, size=len(canonical_boards), dtype=np.uint32)
             all_pis = mcts.getActionProbs(canonical_boards, canonical_hashes, seeds.tolist(), temp=temp)
             for i, pi in enumerate(all_pis):
-                # active_idx = active_indices[i]
-                # if active_idx == 0:
-                #     self._print_board_debug(boards[active_idx], rounds_played, current_players[active_idx],
-                #                             -1)  # Print state before action
-
                 active_idx = active_indices[i]
                 episode_histories[active_idx].append([canonical_boards[i], current_players[active_idx], pi])
                 action = np.random.choice(len(pi), p=pi)
@@ -94,36 +83,12 @@ class Coach:
                                                                             current_players[active_idx], action)
                 boards[active_idx] = np.array(next_board, dtype=np.float32).reshape(13, 9, 9)
                 current_players[active_idx], hashes[active_idx] = next_player, next_hash
-                # ==================== DEBUG BLOCK START ====================
-                # 只打印第一个活动游戏(game 0)的调试信息，以避免信息刷屏
-                # if active_idx == 0:
-                #     print("\n\n--- DEBUG: BOARD STATE AFTER ACTION ---")
-                #     print(f"Game Index (active_idx): {active_idx}")
-                #     print(f"Round: {rounds_played}")
-                #     print(f"Action Taken: {action}")
-                #     print(f"Next Player: {next_player}")
-                #     print("Next Board State (13 channels):")
-                #
-                #     # 获取已经reshape过的棋盘
-                #     reshaped_board_to_print = boards[active_idx]
-                #
-                #     # 遍历并打印13个通道
-                #     for channel_index in range(reshaped_board_to_print.shape[0]):
-                #         print(f"--- Channel {channel_index} ---")
-                #         print(reshaped_board_to_print[channel_index].astype(int))  # astype(int) for cleaner printing
-                #
-                #     print("--- DEBUG: END ---\n")
-                # ===================== DEBUG BLOCK END =====================
+
                 if self.game.getGameEnded(boards[active_idx], 1) != 0:
                     dones[active_idx] = True
 
             pbar.update(1)
         pbar.close()
-
-        # DEBUG
-        # for i in range(0,num_games):
-        #     print("\n--- Final Self-Play Board State of Game 0 ---", file=sys.stderr)
-        #     self._print_board_debug(boards[i], rounds_played, -1, -1)
 
         all_train_examples = []
         for i in range(num_games):
@@ -151,6 +116,13 @@ class Coach:
         return all_train_examples
 
     def learn(self):
+        # --- 保存初始模型作为基准 ---
+        print("Saving initial model to be used as a baseline...")
+        self.nnet.save_checkpoint(folder=self.args['checkpoint'], filename='initial.pth.tar')
+        self.initial_net.load_checkpoint(folder=self.args['checkpoint'], filename='initial.pth.tar')
+        print("Initial model saved and loaded.")
+        sys.stdout.flush()
+
         for i in range(1, self.args.get('numIters', 100) + 1):
             print(f'------ ITERATION {i} ------')
             sys.stdout.flush()
@@ -172,20 +144,16 @@ class Coach:
             self.nnet.save_checkpoint(folder=self.args['checkpoint'], filename='temp.pth.tar')
             self.pnet.load_checkpoint(folder=self.args['checkpoint'], filename='temp.pth.tar')
 
-            # --- 修改: 将 writer 和迭代次数 i 传递给 train 函数 ---
             self.nnet.train(train_examples, i, self.writer)
 
             print('PITTING AGAINST PREVIOUS VERSION')
             mcts_args = katago_cpp_core.MCTSArgs()
             mcts_args.numMCTSSims, mcts_args.cpuct, mcts_args.dirichletAlpha, mcts_args.epsilon = self.args.numMCTSSims, self.args.cpuct, 0, 0
-            nnet_mcts, pnet_mcts = katago_cpp_core.MCTS(self.game, self.nnet.predict_batch,
-                                                        mcts_args), katago_cpp_core.MCTS(self.game,
-                                                                                         self.pnet.predict_batch,
-                                                                                         mcts_args)
+            nnet_mcts = katago_cpp_core.MCTS(self.game, self.nnet.predict_batch, mcts_args)
+            pnet_mcts = katago_cpp_core.MCTS(self.game, self.pnet.predict_batch, mcts_args)
             arena = Arena(nnet_mcts, pnet_mcts, self.game, self.args)
             nwins, pwins, draws = arena.play_games_batch(self.args.get('arenaCompare', 40))
 
-            # --- 新增: 记录 Arena 对战结果到 TensorBoard ---
             self.writer.add_scalar('Arena/NewNetWins', nwins, i)
             self.writer.add_scalar('Arena/PrevNetWins', pwins, i)
             self.writer.add_scalar('Arena/Draws', draws, i)
@@ -194,6 +162,24 @@ class Coach:
                 self.writer.add_scalar('Arena/WinRate', win_rate, i)
 
             print(f'NEW/PREV WINS : {nwins} / {pwins} ; DRAWS : {draws}')
+
+            # --- 新模型与初始模型对战 ---
+            print('PITTING AGAINST INITIAL VERSION')
+            initial_net_mcts = katago_cpp_core.MCTS(self.game, self.initial_net.predict_batch, mcts_args)
+            arena_vs_initial = Arena(nnet_mcts, initial_net_mcts, self.game, self.args)
+            nwins_initial, iwins, draws_initial = arena_vs_initial.play_games_batch(self.args.get('initialCompare', 40))
+
+            # --- 记录对战结果到 TensorBoard ---
+            self.writer.add_scalar('ArenaVsInitial/NewNetWins', nwins_initial, i)
+            self.writer.add_scalar('ArenaVsInitial/InitialNetWins', iwins, i)
+            self.writer.add_scalar('ArenaVsInitial/Draws', draws_initial, i)
+            if (nwins_initial + iwins) > 0:
+                win_rate_initial = float(nwins_initial) / (nwins_initial + iwins)
+                self.writer.add_scalar('ArenaVsInitial/WinRate', win_rate_initial, i)
+
+            print(f'NEW/INITIAL WINS : {nwins_initial} / {iwins} ; DRAWS : {draws_initial}')
+            sys.stdout.flush()
+
             if pwins + nwins == 0 or float(nwins) / (pwins + nwins) < self.args.get('updateThreshold', 0.6):
                 print('REJECTING NEW MODEL')
                 self.nnet.load_checkpoint(folder=self.args['checkpoint'], filename='temp.pth.tar')

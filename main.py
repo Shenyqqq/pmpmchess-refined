@@ -12,10 +12,10 @@ args = dotdict({
     'tempArena': 20,
     'updateThreshold': 0.55,
     'maxlenOfQueue': 200000,
-    'numMCTSSims': 600,  # 自对弈时MCTS模拟次数的上限
-    'min_numSims': 200,  # 自对弈时MCTS模拟次数的下限
+    'numMCTSSims': 800,  # 自对弈时MCTS模拟次数的上限
+    'min_numSims': 400,  # 自对弈时MCTS模拟次数的下限
     'arenaCompare': 48,  # 新旧模型对抗的棋局数
-    'cpuct': 2.0,
+    'cpuct': 1.5,
     'dirichletAlpha': 0.1,
     'epsilon': 0.25,
     'max_rounds': 50,
@@ -24,7 +24,7 @@ args = dotdict({
     'load_model': False,
     'load_folder_file': ('./models/', 'best.pth.tar'),
     'numItersForTrainExamplesHistory': 20,
-    'numParallelGames': 128,  # 并行游戏数
+    'numParallelGames': 192,  # 并行游戏数
     'lr': 0.001,
     'epochs': 10,
     'batch_size': 64,
@@ -35,7 +35,9 @@ args = dotdict({
     'w_pi': 1.0,
     'w_v': 1.0,
     'w_score': 0.2,
-    'w_own': 2.0
+    'w_own': 2.0,
+    'initialCompare': 40,
+    'num_threads': 24
 })
 
 
