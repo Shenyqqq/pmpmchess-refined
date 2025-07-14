@@ -3,7 +3,7 @@ from nn_wrapper import NNetWrapper
 from nn_model import NNet
 from utils import dotdict
 import katago_cpp_core
-from torch.utils.tensorboard import SummaryWriter  # --- 新增导入 ---
+from torch.utils.tensorboard import SummaryWriter
 
 args = dotdict({
     'numIters': 50,
@@ -20,7 +20,7 @@ args = dotdict({
     'epsilon': 0.25,
     'max_rounds': 50,
     'checkpoint': './temp/',
-    'log_dir': './logs/',  # --- 新增: TensorBoard 日志目录 ---
+    'log_dir': './logs/',
     'load_model': False,
     'load_folder_file': ('./models/', 'best.pth.tar'),
     'numItersForTrainExamplesHistory': 20,
@@ -43,13 +43,11 @@ def main():
     g = katago_cpp_core.Game(n=9, max_rounds=args.max_rounds)
     nnet = NNetWrapper(g, NNet, args)
 
-    # --- 新增: 初始化 TensorBoard writer ---
     writer = SummaryWriter(log_dir=args.log_dir)
 
     if args.load_model:
         nnet.load_checkpoint(args.load_folder_file[0], args.load_folder_file[1])
 
-    # --- 修改: 将 writer 传递给 Coach ---
     c = Coach(g, nnet, args, writer)
 
     if args.load_model:
@@ -57,7 +55,7 @@ def main():
 
     c.learn()
 
-    writer.close()  # --- 新增: 结束时关闭 writer ---
+    writer.close()
 
 
 if __name__ == "__main__":
