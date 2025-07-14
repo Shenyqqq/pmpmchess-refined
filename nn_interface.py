@@ -18,20 +18,7 @@ class Game:
         """
         self.n = n
         self.max_rounds = max_rounds
-        # The board state is represented by 13 channels:
-        # Channel 0: Player 1's stones (Black)
-        # Channel 1: Player -1's stones (White)
-        # Channel 2: Player 1's controlled territory (Black)
-        # Channel 3: Player -1's controlled territory (White)
-        # Channel 4: Round counter (normalized)
-        # Channel 5: Player to move is Black (1.0 if black to move, else 0.0)
-        # Channel 6: Player to move is White (1.0 if white to move, else 0.0)
-        # Channel 7: Black's controlled count (normalized value)
-        # Channel 8: White's controlled count (normalized value)
-        # Channel 9: no stones tiles (1 for no stones, 0 otherwise)
-        # Channel 10: uncontrolled tiles(1 for unpainted, 0 otherwise)
-        # Channel 11: Black valid moves(1 for valid, 0 otherwise)
-        # Channel 12: White valid moves(1 for valid, 0 otherwise)
+
         self.board_channels = 13
 
     def get_initial_board(self):

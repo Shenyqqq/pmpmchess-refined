@@ -2,6 +2,21 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
+# The board state is represented by 13 channels:
+# Channel 0: Player 1's stones (Black)
+# Channel 1: Player -1's stones (White)
+# Channel 2: Player 1's controlled territory (Black)
+# Channel 3: Player -1's controlled territory (White)
+# Channel 4: Round counter (normalized)
+# Channel 5: Player to move is Black (1.0 if black to move, else 0.0)
+# Channel 6: Player to move is White (1.0 if white to move, else 0.0)
+# Channel 7: Black's controlled count (normalized value)
+# Channel 8: White's controlled count (normalized value)
+# Channel 9: no stones tiles (1 for no stones, 0 otherwise)
+# Channel 10: uncontrolled tiles(1 for unpainted, 0 otherwise)
+# Channel 11: Black valid moves(1 for valid, 0 otherwise)
+# Channel 12: White valid moves(1 for valid, 0 otherwise)
+
 class ResidualBlock(nn.Module):
     """
     A standard residual block with two convolutional layers.
@@ -22,13 +37,12 @@ class ResidualBlock(nn.Module):
 
 class NNet(nn.Module):
     """
-    The main neural network model for the Connect-Three-Go game.
-    V2: Value head now only predicts win/loss. Auxiliary head predicts score.
+    The main neural network model for the game.
     """
     def __init__(self, game, args):
         super(NNet, self).__init__()
-        self.board_x, self.board_y = game.get_board_size()
-        self.action_size = game.get_action_size()
+        self.board_x, self.board_y = game.getBoardSize()
+        self.action_size = game.getActionSize()
         self.args = args
 
         # --- Backbone ---
@@ -74,7 +88,7 @@ class NNet(nn.Module):
         pi = F.relu(self.policy_bn(self.policy_conv(res_out)))
         pi = pi.view(-1, 2 * self.board_x * self.board_y)
         pi = self.policy_fc(pi)
-        policy_out = F.log_softmax(pi, dim=1)
+        policy_out = F.softmax(pi, dim=1)
 
         # Value Head (Win/Loss)
         v = F.relu(self.value_bn(self.value_conv(res_out)))
