@@ -1,3 +1,4 @@
+[中文](https://github.com/Shenyqqq/pmpmchess-refined/README.md.zh)[English](https://github.com/Shenyqqq/pmpmchess-refined/README.md)
 # Pmpmchess-Refined
 
 Pmpmchess-Refined is a state-of-the-art AI for the game of Pmpmchess, completely re-engineered from the ground up. Inspired by the pioneering architecture of KataGo, this project moves beyond the original AlphaZero framework to deliver much higher performance.
@@ -18,7 +19,7 @@ Here's the lowdown on the rules:
     The game takes place on a 9x9 board. It's a quick match, lasting exactly 50 turns, which means you and your opponent each get to place 25 pieces.
 
 * **💥 How to Capture**
-    Get three of your pieces in an unbroken line (horizontally, vertically, or diagonally) and—BAM!—you capture all three of those squares as your territory. But watch out! If your opponent has even one piece in that potential line, your capture is blocked.
+    Get three of your pieces in an unbroken line (horizontally, vertically, or diagonally) and—BAM!—you capture this line as your territory. But watch out! If your opponent has even one piece in that potential line, your capture is blocked.
 
 * **🤔 Where You Can Move**
     You have two options for placing a piece: any empty square on the board, OR any square inside territory you've already captured. That's right, you can reuse your own turf!
@@ -27,7 +28,7 @@ Here's the lowdown on the rules:
     It's simple! When the game ends (after all 50 turns are up), the player who has captured more squares of territory is crowned the winner.
 
 ## Demonstration
-![gif](https://github.com/Shenyqqq/pmpmchess-refined/tree/master/gif)
+![gif](https://github.com/Shenyqqq/pmpmchess-refined/tree/master/gif/demonstration.gif)
 
 ## Key Architectural Upgrades
 
@@ -146,10 +147,6 @@ To train your own models or modify the code, you'll need to build the project fr
 
   * This project drew significant inspiration from the brilliant research and architectural concepts presented in the [KataGo paper](https://arxiv.org/abs/1902.10565).
   * Special thanks to [liemark's popucom\_chess\_c-python project](https://www.google.com/search?q=https://github.com/liemark/popucom_chess_c-python), which provided valuable initial inspiration.
-
-## License
-
-None yet.
 
 ## Author
 
