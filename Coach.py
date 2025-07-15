@@ -13,19 +13,19 @@ class Coach:
     This class executes the self-play + learning loop.
     """
 
-    def __init__(self, game, nnet, args, writer):  # --- 修改: 接收 writer ---
+    def __init__(self, game, nnet, args, writer):
         self.game = game
         self.nnet = nnet
         self.args = args
-        self.writer = writer  # --- 新增: 保存 writer ---
+        self.writer = writer
         self.pnet = self.nnet.__class__(self.game, self.nnet.nnet_class, self.args)
-        # --- 新增: 初始化一个用于对比的初始网络 ---
         self.initial_net = self.nnet.__class__(self.game, self.nnet.nnet_class, self.args)
         self.train_examples_history = []
         self.skip_first_self_play = False
 
     def _print_board_debug(self, board, round_num, player, action):
         """Helper function to print the board state for debugging during self-play."""
+        # (This function remains unchanged)
         print("\n" + "=" * 30, file=sys.stderr)
         print(f"[SELF-PLAY DEBUG] Round: {round_num}, Player {player} took action {action}", file=sys.stderr)
         print("--- Black Stones (X) ---", file=sys.stderr)
@@ -46,7 +46,20 @@ class Coach:
     def execute_episode_batch(self):
         """
         Performs one batch of self-play episodes, generating training data.
+        This batch is either a "fast" or "deep" simulation.
+
+        Returns:
+            tuple: (training_examples, is_deep_simulation_flag)
         """
+        is_deep_simulation = np.random.rand() < self.args.get('deepProb', 0.25)
+
+        if is_deep_simulation:
+            num_sims = self.args.get('deepNumMCTSSims', 200)
+            desc = "Deep Self-Play (Data Saved)"
+        else:
+            num_sims = self.args.get('fastNumMCTSSims', 50)
+            desc = "Fast Self-Play (Data Discarded)"
+
         num_games = self.args.get('numParallelGames', 8)
         initial_results = [self.game.getInitialBoard() for _ in range(num_games)]
         boards = [np.array(res[0], dtype=np.float32).reshape(13, 9, 9) for res in initial_results]
@@ -54,8 +67,10 @@ class Coach:
         current_players = [1] * num_games
         dones = np.array([False] * num_games)
         episode_histories = [[] for _ in range(num_games)]
-        pbar = tqdm(total=self.args.max_rounds, desc="Batch Self-Play", leave=False)
+
+        pbar = tqdm(total=self.args.max_rounds, desc=desc, leave=False)
         rounds_played = 0
+
         while not dones.all():
             rounds_played += 1
             if rounds_played > self.args.max_rounds: break
@@ -68,8 +83,7 @@ class Coach:
                 canonical_hashes.append(c_hash)
             temp = 1 if rounds_played < self.args.get('tempThreshold', 15) else 0
             mcts_args = katago_cpp_core.MCTSArgs()
-            min_sims = self.args.get('min_numSims', self.args.numMCTSSims)
-            mcts_args.numMCTSSims = np.random.randint(min_sims, self.args.numMCTSSims + 1)
+            mcts_args.numMCTSSims = num_sims
             mcts_args.cpuct, mcts_args.dirichletAlpha, mcts_args.epsilon, mcts_args.factor_winloss = self.args.cpuct, self.args.dirichletAlpha, self.args.epsilon, self.args.factor_winloss
             mcts = katago_cpp_core.MCTS(self.game, self.nnet.predict_batch, mcts_args)
 
@@ -113,10 +127,13 @@ class Coach:
                     sym_ownership = ownership_symmetries[j]
                     win_loss_target = game_result_win_loss * player
                     all_train_examples.append((sym_board, sym_pi, win_loss_target, score_dist_target, sym_ownership))
-        return all_train_examples
+
+        return all_train_examples, is_deep_simulation
 
     def learn(self):
-        # --- 保存初始模型作为基准 ---
+        """
+        主学习循环。
+        """
         print("Saving initial model to be used as a baseline...")
         self.nnet.save_checkpoint(folder=self.args['checkpoint'], filename='initial.pth.tar')
         self.initial_net.load_checkpoint(folder=self.args['checkpoint'], filename='initial.pth.tar')
@@ -127,15 +144,28 @@ class Coach:
             print(f'------ ITERATION {i} ------')
             sys.stdout.flush()
 
-            # 如果 skip_first_self_play 为 False，或者不是第一次迭代，则执行自对弈
             if not self.skip_first_self_play or i > 1:
                 iteration_train_examples = deque(maxlen=self.args.get('maxlenOfQueue', 200000))
-                eps_tqdm = tqdm(range(self.args.get('numEps', 1)), desc="Collecting Self-Play Episodes")
+                num_eps = self.args.get('numEps', 1)
+                num_deep_episodes = 0
+
+                print(f"Starting self-play for {num_eps} episode batches...")
+                sys.stdout.flush()
+
+                eps_tqdm = tqdm(range(num_eps), desc="Collecting Self-Play Episodes")
                 for _ in eps_tqdm:
-                    iteration_train_examples.extend(self.execute_episode_batch())
+                    new_examples, is_deep = self.execute_episode_batch()
+                    if is_deep:
+                        iteration_train_examples.extend(new_examples)
+                        num_deep_episodes += 1
+
+                print(
+                    f"\nFinished self-play. Collected {len(iteration_train_examples)} training examples from {num_deep_episodes} deep-simulation episode batches.")
+                sys.stdout.flush()
+
                 self.train_examples_history.append(iteration_train_examples)
-                if len(self.train_examples_history) > self.args.get('numItersForTrainExamplesHistory',
-                                                                    20): self.train_examples_history.pop(0)
+                if len(self.train_examples_history) > self.args.get('numItersForTrainExamplesHistory', 20):
+                    self.train_examples_history.pop(0)
                 self.save_train_examples(i - 1)
 
             train_examples = []
@@ -166,23 +196,6 @@ class Coach:
 
             print(f'NEW/PREV WINS : {nwins} / {pwins} ; DRAWS : {draws}')
 
-            # --- 新模型与初始模型对战 ---
-            print('PITTING AGAINST INITIAL VERSION')
-            initial_net_mcts = katago_cpp_core.MCTS(self.game, self.initial_net.predict_batch, mcts_args)
-            arena_vs_initial = Arena(nnet_mcts, initial_net_mcts, self.game, self.args)
-            nwins_initial, iwins, draws_initial = arena_vs_initial.play_games_batch(self.args.get('initialCompare', 40))
-
-            # --- 记录对战结果到 TensorBoard ---
-            self.writer.add_scalar('ArenaVsInitial/NewNetWins', nwins_initial, i)
-            self.writer.add_scalar('ArenaVsInitial/InitialNetWins', iwins, i)
-            self.writer.add_scalar('ArenaVsInitial/Draws', draws_initial, i)
-            if (nwins_initial + iwins) > 0:
-                win_rate_initial = float(nwins_initial) / (nwins_initial + iwins)
-                self.writer.add_scalar('ArenaVsInitial/WinRate', win_rate_initial, i)
-
-            print(f'NEW/INITIAL WINS : {nwins_initial} / {iwins} ; DRAWS : {draws_initial}')
-            sys.stdout.flush()
-
             if pwins + nwins == 0 or float(nwins) / (pwins + nwins) < self.args.get('updateThreshold', 0.6):
                 print('REJECTING NEW MODEL')
                 self.nnet.load_checkpoint(folder=self.args['checkpoint'], filename='temp.pth.tar')
@@ -200,9 +213,31 @@ class Coach:
         filename = os.path.join(folder, self.get_checkpoint_file(iteration) + ".examples")
         with open(filename, "wb+") as f: Pickler(f).dump(self.train_examples_history)
 
+    def load_separate_train_examples(self, filepath):
+        """
+        从指定文件独立加载训练数据，用于训练新模型。
+        加载后将跳过第一次自对弈。
+        """
+        if not os.path.isfile(filepath):
+            print(f'File "{filepath}" with train examples not found!')
+            return False
+
+        print(f"Loading training examples from a separate file: {filepath}")
+        try:
+            with open(filepath, "rb") as f:
+                self.train_examples_history = Unpickler(f).load()
+            # 设置标志位，在下一轮学习中跳过自对弈环节
+            self.skip_first_self_play = True
+            print("Training examples loaded successfully.")
+            return True
+        except Exception as e:
+            print(f"Error loading training examples: {e}")
+            return False
+
+    # --- 重命名函数: 加载模型及其附带的训练数据 ---
     def load_train_examples(self):
         """
-        加载指定模型附带的训练数据。
+        加载指定模型检查点及其附带的训练数据。
         """
         model_file = os.path.join(self.args['load_folder_file'][0], self.args['load_folder_file'][1])
         examples_file = model_file + ".examples"
@@ -210,7 +245,7 @@ class Coach:
             print(f'File "{examples_file}" with train examples not found!')
             return False
 
-        print(f"Loading training examples from file: {examples_file}")
+        print(f"Loading training examples from file associated with model: {examples_file}")
         with open(examples_file, "rb") as f:
             self.train_examples_history = Unpickler(f).load()
 

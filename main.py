@@ -8,13 +8,14 @@ from torch.utils.tensorboard import SummaryWriter
 args = dotdict({
     'numIters': 50,
     'numEps': 1,  # 每个迭代的自对弈批次数
-    'tempThreshold': 20,
-    'tempArena': 20,
-    'updateThreshold': 0.55,
+    'tempThreshold': 15,
+    'tempArena': 15,
+    'updateThreshold': 0.6,
     'maxlenOfQueue': 200000,
-    'numMCTSSims': 800,  # 自对弈时MCTS模拟次数的上限
-    'min_numSims': 400,  # 自对弈时MCTS模拟次数的下限
-    'arenaCompare': 48,  # 新旧模型对抗的棋局数
+    'deepProb': 0.25,  # 进行深度模拟的概率
+    'deepNumMCTSSims': 800,  # 深度模拟的MCTS次数
+    'fastNumMCTSSims': 100,
+    'arenaCompare': 64,  # 新旧模型对抗的棋局数
     'cpuct': 1.5,
     'dirichletAlpha': 0.1,
     'epsilon': 0.25,
@@ -22,9 +23,11 @@ args = dotdict({
     'checkpoint': './temp/',
     'log_dir': './logs/',
     'load_model': False,
-    'load_folder_file': ('./models/', 'best.pth.tar'),
+    'load_separate_examples': True,
+    'load_separate_file': 'save/checkpoint_15.pth.tar.examples',
+    'load_folder_file': ('./save/', 'checkpoint_9.pth.tar'),
     'numItersForTrainExamplesHistory': 20,
-    'numParallelGames': 192,  # 并行游戏数
+    'numParallelGames': 128,  # 并行游戏数
     'lr': 0.001,
     'epochs': 10,
     'batch_size': 64,
@@ -54,6 +57,8 @@ def main():
 
     if args.load_model:
         c.load_train_examples()
+    if args.load_separate_examples:
+        c.load_separate_train_examples(args.load_separate_file)
 
     c.learn()
 

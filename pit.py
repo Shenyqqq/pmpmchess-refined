@@ -1,5 +1,5 @@
-# play_vs_ai.py
-# 运行此文件以启动具有高级功能的人机对战GUI。
+# pit.py
+# 运行此文件以启动具有悔棋和动态AI参数调整功能的高级GUI。
 
 import pygame
 import numpy as np
@@ -16,15 +16,18 @@ from nn_model import NNet
 C_BLACK = (0, 0, 0)
 C_WHITE = (255, 255, 255)
 C_GRID = (50, 50, 50)
-C_PLAYER_1 = (220, 50, 50)  # 红色 (P1)
-C_PLAYER_2 = (50, 100, 220)  # 蓝色 (P2)
-C_P1_CONTROL = (255, 224, 224)  # 淡红色
-C_P2_CONTROL = (224, 224, 255)  # 浅蓝色
+C_PLAYER_1 = (220, 50, 50)
+C_PLAYER_2 = (50, 100, 220)
+C_P1_CONTROL = (255, 224, 224)
+C_P2_CONTROL = (224, 224, 255)
 C_BUTTON = (100, 100, 100)
 C_BUTTON_HOVER = (130, 130, 130)
 C_BUTTON_TEXT = (255, 255, 255)
 C_INFO_TEXT = (30, 30, 30)
+C_INPUT_BOX_ACTIVE = (150, 150, 200)
+C_INPUT_BOX_INACTIVE = (200, 200, 200)
 
+# --- 布局和游戏参数 ---
 BOARD_SIZE = 9
 MAX_ROUNDS = 50
 CELL_SIZE = 60
@@ -45,8 +48,6 @@ args = dotdict({
     'num_channels': 13,
     'num_filters': 128,
     'num_residual_blocks': 8,
-    'numMCTSSims': 800,  # AI落子时的模拟次数
-    'numMCTSSimsAnal': 200,  # 分析功能使用的模拟次数
     'cpuct': 1.0,
     'epsilon': 0,
     'checkpoint': './checkpoint/',
@@ -60,13 +61,11 @@ class Button:
         self.rect = pygame.Rect(rect)
         self.text = text
         self.callback = callback
-        self.hovered = False
 
     def handle_event(self, event):
-        if event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
-            if self.rect.collidepoint(event.pos):
-                self.callback()
-                return True
+        if event.type == pygame.MOUSEBUTTONDOWN and event.button == 1 and self.rect.collidepoint(event.pos):
+            self.callback()
+            return True
         return False
 
     def draw(self, screen, font):
@@ -77,36 +76,61 @@ class Button:
         screen.blit(text_surf, text_rect)
 
 
+class TextInputBox:
+    """一个简单的文本输入框类，支持整数和小数"""
+
+    def __init__(self, rect, initial_text="", allow_float=False):
+        self.rect = pygame.Rect(rect)
+        self.text = initial_text
+        self.active = False
+        self.allow_float = allow_float
+
+    def handle_event(self, event):
+        if event.type == pygame.MOUSEBUTTONDOWN:
+            self.active = self.rect.collidepoint(event.pos)
+        if event.type == pygame.KEYDOWN and self.active:
+            if event.key == pygame.K_BACKSPACE:
+                self.text = self.text[:-1]
+            elif event.unicode.isdigit():
+                self.text += event.unicode
+            elif self.allow_float and event.unicode == '.' and '.' not in self.text:
+                self.text += event.unicode
+
+    def draw(self, screen, font):
+        color = C_INPUT_BOX_ACTIVE if self.active else C_INPUT_BOX_INACTIVE
+        pygame.draw.rect(screen, color, self.rect, border_radius=5)
+        text_surf = font.render(self.text, True, C_BLACK)
+        screen.blit(text_surf, (self.rect.x + 5, self.rect.y + 5))
+
+
 class GameGUI:
+
     def __init__(self):
         pygame.init()
-        pygame.display.set_caption("人机对战 & 分析工具")
+        pygame.display.set_caption("人机对战 & 分析工具 v2.1")
         self.screen = pygame.display.set_mode((WINDOW_WIDTH, WINDOW_HEIGHT))
         self.font_info = pygame.font.SysFont("simhei", 24)
         self.font_button = pygame.font.SysFont("simhei", 20)
-        self.font_analysis = pygame.font.SysFont("arial", 12)
+        self.font_label = pygame.font.SysFont("simhei", 18)
 
         self.game_state = 'MENU'
         self.game_mode = None
-        self.game_over = True  # 初始化 game_over 状态
+        self.game_over = True
+        self.game_history = []
 
         self.analysis_data = None
         self.show_analysis = False
-
-        # --- AI 移动线程相关状态 ---
         self.is_ai_thinking = False
         self.ai_move_result = None
-
-        # --- MCTS 分析线程相关状态 ---
         self.is_analysis_running = False
         self.analysis_result = None
         self.analysis_thread = None
 
         self.clock = pygame.time.Clock()
-        self._initialize_neural_net_and_mcts()
-        self._create_buttons()
+        self._initialize_neural_net()
+        self._create_ui_elements()
 
-    def _initialize_neural_net_and_mcts(self):
+    def _initialize_neural_net(self):
         self.game_core = katago_cpp_core.Game(BOARD_SIZE, MAX_ROUNDS)
         try:
             self.nnet = NNetWrapper(self.game_core, NNet, args)
@@ -116,23 +140,7 @@ class GameGUI:
             print(f"错误：找不到模型文件 {os.path.join(args.checkpoint, args.load_model_file)}")
             sys.exit(1)
 
-        # MCTS for AI's actual moves
-        mcts_args_move = katago_cpp_core.MCTSArgs()
-        mcts_args_move.numMCTSSims = args.numMCTSSims
-        mcts_args_move.cpuct = args.cpuct
-        mcts_args_move.epsilon = args.epsilon
-        self.mcts = katago_cpp_core.MCTS(self.game_core, self.nnet.predict_batch, mcts_args_move)
-        print(f"AI移动MCTS引擎初始化成功 (模拟次数: {args.numMCTSSims})。")
-
-        # A separate MCTS instance for the analysis feature
-        mcts_args_anal = katago_cpp_core.MCTSArgs()
-        mcts_args_anal.numMCTSSims = args.numMCTSSimsAnal
-        mcts_args_anal.cpuct = args.cpuct
-        mcts_args_anal.epsilon = args.epsilon
-        self.mcts_analysis = katago_cpp_core.MCTS(self.game_core, self.nnet.predict_batch, mcts_args_anal)
-        print(f"局面分析MCTS引擎初始化成功 (模拟次数: {args.numMCTSSimsAnal})。")
-
-    def _create_buttons(self):
+    def _create_ui_elements(self):
         panel_x = BOARD_DIM + MARGIN * 2
         self.menu_buttons = [
             Button((panel_x + 50, 150, 200, 50), "玩家 vs 玩家", lambda: self.start_game('P_vs_P')),
@@ -140,10 +148,18 @@ class GameGUI:
             Button((panel_x + 50, 290, 200, 50), "执白 vs AI", lambda: self.start_game('P_vs_AI_White')),
             Button((panel_x + 50, 360, 200, 50), "AI vs AI", lambda: self.start_game('AI_vs_AI')),
         ]
+
+        # 修复UI重叠：调整按钮和输入框的Y坐标
         self.game_buttons = [
-            Button((panel_x + 50, WINDOW_HEIGHT - 180, 200, 40), "切换分析显示", self.toggle_analysis),
-            Button((panel_x + 50, WINDOW_HEIGHT - 120, 200, 40), "返回菜单", self.go_to_menu)
+            Button((panel_x + 50, 320, 200, 40), "悔棋", self.undo_move),
+            Button((panel_x + 50, 370, 200, 40), "切换分析显示", self.toggle_analysis),
+            Button((panel_x + 50, 420, 200, 40), "返回菜单", self.go_to_menu)
         ]
+
+        self.sims_move_input = TextInputBox((panel_x + 160, 490, 90, 30), "2000")
+        self.sims_anal_input = TextInputBox((panel_x + 160, 530, 90, 30), "200")
+        self.temp_input = TextInputBox((panel_x + 160, 570, 90, 30), "1.0", allow_float=True)  # 允许输入小数
+        self.input_boxes = [self.sims_move_input, self.sims_anal_input, self.temp_input]
 
     def start_game(self, mode):
         self.game_mode = mode
@@ -151,7 +167,7 @@ class GameGUI:
         self.board = np.array(self.board, dtype=np.float32)
         self.current_player = 1
         self.game_over = False
-        self.winner = 0
+        self.game_history = []
         self.analysis_data = None
         self.game_state = 'PLAYING'
         self.is_ai_thinking = False
@@ -166,7 +182,57 @@ class GameGUI:
         self.game_state = 'MENU'
         self.is_ai_thinking = False
         self.is_analysis_running = False
-        self.game_over = True  # 返回菜单时，将游戏标记为结束
+        self.game_over = True
+
+    def undo_move(self):
+        """智能悔棋功能"""
+        if self.is_ai_thinking:
+            print("无法在AI思考时悔棋。")
+            return
+
+        # 决定悔棋步数
+        undo_steps = 1
+        is_p_vs_ai = self.game_mode in ['P_vs_AI_Black', 'P_vs_AI_White']
+        is_human_turn_now = (self.game_mode == 'P_vs_AI_Black' and self.current_player == 1) or \
+                            (self.game_mode == 'P_vs_AI_White' and self.current_player == -1)
+
+        if is_p_vs_ai and is_human_turn_now and len(self.game_history) >= 2:
+            undo_steps = 2
+
+        if len(self.game_history) < undo_steps:
+            print(f"历史记录不足，无法悔棋 {undo_steps} 步。")
+            return
+
+        print(f"执行悔棋 {undo_steps} 步...")
+
+        # 弹出相应步数
+        for _ in range(undo_steps):
+            self.game_history.pop()
+
+        # 恢复到悔棋后的最新状态
+        if self.game_history:
+            last_state = self.game_history[-1]
+            # 注意：历史记录存的是落子前的状态，所以我们恢复的是上上步的状态
+            # 但perform_move又会存一次，所以逻辑要小心。
+            # 正确逻辑：恢复到悔棋后，历史记录的最后一条。
+            # 我们的perform_move在落子前保存状态，所以pop()之后，history的最后一条就是我们要恢复的状态
+            prev_state = self.game_history.pop()  # 再次弹出以获取该状态，之后再添加回去
+            self.board = prev_state['board']
+            self.hash = prev_state['hash']
+            self.current_player = prev_state['player']
+            # 重新执行这一步，以确保历史记录的连续性
+            self.perform_move(prev_state['last_action'])
+
+        else:  # 如果悔棋到开局
+            self.start_game(self.game_mode)
+            # 为了避免调用两次run_deep_analysis，我们在这里直接返回
+            return
+
+        print("悔棋成功。")
+        if self.show_analysis:
+            self.run_deep_analysis()
+        else:
+            self.analysis_data = None
 
     def toggle_analysis(self):
         self.show_analysis = not self.show_analysis
@@ -176,49 +242,51 @@ class GameGUI:
             self.analysis_data = None
             self.is_analysis_running = False
 
+    def _create_mcts_instance(self, sims, temp=1.0):
+        mcts_args = katago_cpp_core.MCTSArgs()
+        try:
+            mcts_args.numMCTSSims = int(sims) if sims else 100
+        except (ValueError, TypeError):
+            mcts_args.numMCTSSims = 100
+        mcts_args.cpuct = args.cpuct
+        mcts_args.epsilon = args.epsilon
+        return katago_cpp_core.MCTS(self.game_core, self.nnet.predict_batch, mcts_args)
+
     def _deep_analysis_task(self):
-        """在后台线程中运行MCTS分析"""
-        print(f"为玩家 {self.current_player} 运行当前局面的深度分析 (模拟次数: {args.numMCTSSimsAnal})...")
-        # 1. 从MCTS获取策略向量
+        sims = self.sims_anal_input.text
+        temp_str = self.temp_input.text
+        try:
+            temp = float(temp_str) if temp_str else 1.0
+        except (ValueError, TypeError):
+            temp = 1.0
+        print(f"为玩家 {self.current_player} 运行深度分析 (模拟: {sims}, 温度: {temp})...")
+        mcts_anal = self._create_mcts_instance(sims)
         canonical_board, canonical_hash = self.game_core.getCanonicalForm(self.board, self.hash, self.current_player)
         seeds = np.random.randint(0, 2 ** 32 - 1, size=1, dtype=np.uint32)
-        # --- 使用专用的分析MCTS实例 ---
-        pi = self.mcts_analysis.getActionProbs([canonical_board], [canonical_hash], seeds.tolist(), temp=1)[0]
-
-        # 2. 从神经网络获取价值、得分等信息
+        pi = mcts_anal.getActionProbs([canonical_board], [canonical_hash], seeds.tolist(), temp=temp)[0]
         canonical_board_tensor = torch.FloatTensor(canonical_board).contiguous().to(self.nnet.device)
         batch = canonical_board_tensor.unsqueeze(0).cpu()
         _, v, score, score_var, ownership = self.nnet.predict_batch(batch)
-
-        # 3. 组合成最终的分析数据
         analysis_dict = {
-            'pi': pi,  # 使用MCTS的策略
-            'v': (v[0][0] + 1) / 2,
-            'score': score[0][0],
-            'score_var': score_var[0][0],
-            'ownership': ownership[0][0]
+            'pi': pi, 'v': (v[0][0] + 1) / 2, 'score': score[0][0],
+            'score_var': score_var[0][0], 'ownership': ownership[0][0]
         }
         if self.current_player == -1:
             analysis_dict['ownership'] *= -1
-
         self.analysis_result = analysis_dict
 
     def run_deep_analysis(self):
-        """启动MCTS深度分析线程"""
         if self.is_analysis_running or self.game_over or self.game_state != 'PLAYING':
             return
-        # --- 修复: 立即清除旧的分析数据以防止残留显示 ---
         self.analysis_data = None
         self.is_analysis_running = True
         self.analysis_result = None
-        self.analysis_thread = threading.Thread(target=self._deep_analysis_task)
-        self.analysis_thread.daemon = True
+        self.analysis_thread = threading.Thread(target=self._deep_analysis_task, daemon=True)
         self.analysis_thread.start()
 
     def run(self):
         while True:
             self.handle_events()
-            # --- 修复: 只有在游戏进行中才更新游戏逻辑 ---
             if self.game_state == 'PLAYING':
                 self.update_game()
             self.draw()
@@ -227,43 +295,35 @@ class GameGUI:
     def handle_events(self):
         for event in pygame.event.get():
             if event.type == pygame.QUIT:
-                pygame.quit()
-                sys.exit()
-
+                pygame.quit(), sys.exit()
             active_buttons = self.menu_buttons if self.game_state == 'MENU' else self.game_buttons
             for btn in active_buttons:
                 btn.handle_event(event)
-
+            for box in self.input_boxes:
+                box.handle_event(event)
             is_human_turn = (self.game_mode == 'P_vs_P') or \
                             (self.game_mode == 'P_vs_AI_Black' and self.current_player == 1) or \
                             (self.game_mode == 'P_vs_AI_White' and self.current_player == -1)
-
             if self.game_state == 'PLAYING' and is_human_turn and not self.is_ai_thinking:
                 if event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
-                    self.handle_board_click(event.pos)
+                    clicked_on_ui = any(btn.rect.collidepoint(event.pos) for btn in self.game_buttons) or \
+                                    any(box.rect.collidepoint(event.pos) for box in self.input_boxes)
+                    if not clicked_on_ui:
+                        self.handle_board_click(event.pos)
 
     def update_game(self):
         if self.game_over: return
-
-        # 检查AI移动线程是否完成
         if self.ai_move_result is not None:
-            action = self.ai_move_result
-            self.perform_move(action)
+            self.perform_move(self.ai_move_result)
             self.ai_move_result = None
             self.is_ai_thinking = False
-
-        # 检查分析线程是否完成
         if self.analysis_result is not None:
             self.analysis_data = self.analysis_result
             self.analysis_result = None
             self.is_analysis_running = False
-            print("深度分析完成，已更新界面。")
-
         is_ai_turn = (self.game_mode == 'AI_vs_AI') or \
                      (self.game_mode == 'P_vs_AI_Black' and self.current_player == -1) or \
                      (self.game_mode == 'P_vs_AI_White' and self.current_player == 1)
-
-        # 如果轮到AI下棋，并且它当前没有在思考，则启动思考线程
         if is_ai_turn and not self.is_ai_thinking:
             self.ai_move()
 
@@ -279,13 +339,11 @@ class GameGUI:
         title_surf = self.font_info.render("选择游戏模式", True, C_BLACK)
         title_rect = title_surf.get_rect(center=(WINDOW_WIDTH / 2, 100))
         self.screen.blit(title_surf, title_rect)
-        for btn in self.menu_buttons:
-            btn.draw(self.screen, self.font_button)
+        for btn in self.menu_buttons: btn.draw(self.screen, self.font_button)
 
     def draw_game_screen(self):
         self.draw_board_and_pieces()
-        if self.show_analysis and self.analysis_data:
-            self.draw_analysis_overlay()
+        if self.show_analysis and self.analysis_data: self.draw_analysis_overlay()
         self.draw_side_panel()
 
     def draw_board_and_pieces(self):
@@ -297,13 +355,11 @@ class GameGUI:
                     pygame.draw.rect(self.screen, C_P1_CONTROL, rect)
                 elif board_reshaped[3, r, c] == 1.0:
                     pygame.draw.rect(self.screen, C_P2_CONTROL, rect)
-
         for i in range(BOARD_SIZE + 1):
             pygame.draw.line(self.screen, C_GRID, (MARGIN + i * CELL_SIZE, MARGIN),
                              (MARGIN + i * CELL_SIZE, MARGIN + BOARD_DIM))
             pygame.draw.line(self.screen, C_GRID, (MARGIN, MARGIN + i * CELL_SIZE),
                              (MARGIN + BOARD_DIM, MARGIN + i * CELL_SIZE))
-
         for r in range(BOARD_SIZE):
             for c in range(BOARD_SIZE):
                 center = (MARGIN + c * CELL_SIZE + CELL_SIZE // 2, MARGIN + r * CELL_SIZE + CELL_SIZE // 2)
@@ -315,12 +371,8 @@ class GameGUI:
     def draw_analysis_overlay(self):
         if not self.analysis_data: return
         overlay = pygame.Surface((BOARD_DIM, BOARD_DIM), pygame.SRCALPHA)
-
-        pi_values = self.analysis_data['pi']
-        if not isinstance(pi_values, np.ndarray):
-            pi_values = np.array(pi_values)
-
-        max_pi = np.max(pi_values)
+        pi_values = np.array(self.analysis_data['pi'])
+        max_pi = np.max(pi_values) if len(pi_values) > 0 else 0
         if max_pi > 0:
             for i, prob in enumerate(pi_values):
                 if prob > 0.001:
@@ -328,7 +380,6 @@ class GameGUI:
                     alpha = int(220 * (prob / max_pi))
                     color = (34, 139, 34, alpha)
                     pygame.draw.rect(overlay, color, (c * CELL_SIZE, r * CELL_SIZE, CELL_SIZE, CELL_SIZE))
-
         ownership_map = self.analysis_data['ownership']
         for r in range(BOARD_SIZE):
             for c in range(BOARD_SIZE):
@@ -338,7 +389,7 @@ class GameGUI:
                     color = C_PLAYER_1 if own_val > 0 else C_PLAYER_2
                     rect_size = int(CELL_SIZE * 0.5)
                     rect_pos = (
-                        c * CELL_SIZE + (CELL_SIZE - rect_size) / 2, r * CELL_SIZE + (CELL_SIZE - rect_size) / 2)
+                    c * CELL_SIZE + (CELL_SIZE - rect_size) / 2, r * CELL_SIZE + (CELL_SIZE - rect_size) / 2)
                     own_rect = pygame.Rect(rect_pos[0], rect_pos[1], rect_size, rect_size)
                     pygame.draw.rect(overlay, (*color, alpha), own_rect, border_radius=4)
         self.screen.blit(overlay, (MARGIN, MARGIN))
@@ -348,89 +399,94 @@ class GameGUI:
         title_text = "游戏状态" if not self.game_over else "游戏结束"
         title_surf = self.font_info.render(title_text, True, C_BLACK)
         self.screen.blit(title_surf, (panel_x + 20, 20))
-
         board_reshaped = self.board.reshape(13, BOARD_SIZE, BOARD_SIZE)
         round_num = int(board_reshaped[4, 0, 0] * MAX_ROUNDS)
         p1_control = int(np.sum(board_reshaped[2]))
         p2_control = int(np.sum(board_reshaped[3]))
-        info_texts = [f"回合: {round_num} / {MAX_ROUNDS}", f"红方控制区: {p1_control}", f"蓝方控制区: {p2_control}"]
-
+        info_texts = [f"回合: {round_num}/{MAX_ROUNDS}", f"红方控制区: {p1_control}", f"蓝方控制区: {p2_control}"]
         if self.game_over:
             winner_text = "平局"
-            if self.winner != 0:
-                winner_name = "红方" if self.winner == 1 else "蓝方"
-                winner_text = f"胜者: {winner_name}"
+            if self.winner != 0: winner_text = f"胜者: {'红方' if self.winner == 1 else '蓝方'}"
             info_texts.append(winner_text)
         else:
-            player_name = "红方" if self.current_player == 1 else "蓝方"
-            turn_text = f"当前玩家: {player_name}"
-            if self.is_ai_thinking:
-                turn_text = "AI 思考中..."
+            turn_text = f"当前玩家: {'红方' if self.current_player == 1 else '蓝方'}"
+            if self.is_ai_thinking: turn_text = "AI 思考中..."
             info_texts.append(turn_text)
-
         for i, text in enumerate(info_texts):
-            surf = self.font_info.render(text, True, C_INFO_TEXT)
-            self.screen.blit(surf, (panel_x + 20, 60 + i * 35))
-
+            self.screen.blit(self.font_info.render(text, True, C_INFO_TEXT), (panel_x + 20, 60 + i * 35))
         if self.show_analysis:
+            analysis_title = "--- AI 深度分析 ---"
             if self.is_analysis_running:
-                analysis_texts = ["--- AI 分析 ---", "分析中..."]
+                analysis_texts = ["分析中..."]
             elif self.analysis_data:
-                analysis_texts = [
-                    "--- AI 深度分析 ---",
-                    f"胜率 (Value): {self.analysis_data['v']:.2%}",
-                    f"预测得分 (Score): {self.analysis_data['score']:.2f} ± {math.sqrt(self.analysis_data['score_var']):.2f}",
-                ]
+                analysis_texts = [f"胜率: {self.analysis_data['v']:.2%}",
+                                  f"得分: {self.analysis_data['score']:.2f} ± {math.sqrt(self.analysis_data['score_var']):.2f}"]
             else:
-                analysis_texts = ["--- AI 分析 ---", "等待分析..."]
-
+                analysis_texts = ["等待分析..."]
+            self.screen.blit(self.font_info.render(analysis_title, True, C_INFO_TEXT), (panel_x + 20, 200))
             for i, text in enumerate(analysis_texts):
-                surf = self.font_info.render(text, True, C_INFO_TEXT)
-                self.screen.blit(surf, (panel_x + 20, 220 + i * 35))
+                self.screen.blit(self.font_info.render(text, True, C_INFO_TEXT), (panel_x + 20, 235 + i * 35))
 
-        for btn in self.game_buttons:
-            btn.draw(self.screen, self.font_button)
+        # 修复UI重叠：调整AI参数和按钮的Y坐标
+        y_offset = 460
+        self.screen.blit(self.font_info.render("--- AI 参数设置 ---", True, C_INFO_TEXT), (panel_x + 20, y_offset))
+        y_offset += 35
+        self.screen.blit(self.font_label.render("模拟次数 (行棋)", True, C_INFO_TEXT), (panel_x + 20, y_offset + 5))
+        self.sims_move_input.rect.y = y_offset
+        self.sims_move_input.draw(self.screen, self.font_label)
+        y_offset += 40
+        self.screen.blit(self.font_label.render("模拟次数 (分析)", True, C_INFO_TEXT), (panel_x + 20, y_offset + 5))
+        self.sims_anal_input.rect.y = y_offset
+        self.sims_anal_input.draw(self.screen, self.font_label)
+        y_offset += 40
+        self.screen.blit(self.font_label.render("温度 (分析)", True, C_INFO_TEXT), (panel_x + 20, y_offset + 5))
+        self.temp_input.rect.y = y_offset
+        self.temp_input.draw(self.screen, self.font_label)
+
+        for btn in self.game_buttons: btn.draw(self.screen, self.font_button)
 
     def handle_board_click(self, pos):
         if self.game_over: return
-        board_x = pos[0] - MARGIN
-        board_y = pos[1] - MARGIN
+        board_x, board_y = pos[0] - MARGIN, pos[1] - MARGIN
         if 0 <= board_x < BOARD_DIM and 0 <= board_y < BOARD_DIM:
             r, c = board_y // CELL_SIZE, board_x // CELL_SIZE
             action = r * BOARD_SIZE + c
-            valid_moves = self.game_core.getValidMoves(self.board, self.current_player)
-            if valid_moves[action] == 1:
+            if self.game_core.getValidMoves(self.board, self.current_player)[action] == 1:
                 self.perform_move(action)
             else:
                 print(f"无效落子位置: ({r}, {c})")
 
     def _ai_move_task(self):
+        sims = self.sims_move_input.text
+        mcts_move = self._create_mcts_instance(sims)
         canonical_board, canonical_hash = self.game_core.getCanonicalForm(self.board, self.hash, self.current_player)
         seeds = np.random.randint(0, 2 ** 32 - 1, size=1, dtype=np.uint32)
-        pi = self.mcts.getActionProbs([canonical_board], [canonical_hash], seeds.tolist(), temp=0)[0]
-        action = np.argmax(pi)
-        self.ai_move_result = action
+        pi = mcts_move.getActionProbs([canonical_board], [canonical_hash], seeds.tolist(), temp=0)[0]
+        self.ai_move_result = np.argmax(pi)
 
     def ai_move(self):
         if self.is_ai_thinking: return
         self.is_ai_thinking = True
         self.ai_move_result = None
-        ai_thread = threading.Thread(target=self._ai_move_task)
-        ai_thread.daemon = True
-        ai_thread.start()
+        threading.Thread(target=self._ai_move_task, daemon=True).start()
 
     def perform_move(self, action):
+        # 保存当前状态到历史记录，用于悔棋
+        self.game_history.append({
+            'board': self.board.copy(),
+            'hash': self.hash,
+            'player': self.current_player,
+            'last_action': action  # 保存上一步的动作，用于悔棋后恢复
+        })
         next_board_list, next_player, next_hash = self.game_core.getNextState(self.board, self.current_player, action)
         self.board = np.array(next_board_list, dtype=np.float32)
         self.current_player = next_player
         self.hash = next_hash
-        self.winner = self.game_core.getGameEnded(self.board, self.current_player)
+        self.winner = self.game_core.getGameEnded(self.board, self.current_player * -1)
         if self.winner != 0:
             self.game_over = True
             self.game_state = 'GAME_OVER'
-            self.is_analysis_running = False  # 游戏结束，停止分析
-
-        # 移动后，如果分析是开启的，就为新局面重新运行深度分析
+            self.is_analysis_running = False
         if self.show_analysis and not self.game_over:
             self.run_deep_analysis()
 
