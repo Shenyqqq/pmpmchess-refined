@@ -28,7 +28,7 @@ class NNetWrapper:
         scheduler = torch.optim.lr_scheduler.OneCycleLR(
             optimizer,
             max_lr=self.args.get('lr', 0.001),
-            total_steps=epochs * batch_count
+            total_steps=int(epochs * batch_count)
         )
 
         for epoch in range(self.args.get('epochs', 10)):
