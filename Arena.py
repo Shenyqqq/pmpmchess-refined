@@ -132,22 +132,9 @@ class Arena:
                 current_players[i] = next_player
                 hashes[i] = next_hash
 
-                # --- MODIFIED BLOCK: Correctly check game end and count results ---
-                # --- 修改后的代码块: 正确检查游戏结束并统计结果 ---
                 game_result = self.game.getGameEnded(boards[i], 1)
                 if game_result != 0:
                     dones[i] = True
-
-                    # ADDED: Python-side score calculation and logging for cross-validation
-                    # 新增: Python端分数计算和日志，用于交叉验证
-                    p1_score_py = np.sum(boards[i][2])
-                    p2_score_py = np.sum(boards[i][3])
-                    print(
-                        f"[ARENA_LOG Python] Game {start_game_idx + i} Ended. P1(Black) Score: {p1_score_py}, P2(White) Score: {p2_score_py}",
-                        file=sys.stderr)
-
-                    # BUG FIX: Correctly handle draws by checking for the specific draw value (1e-4)
-                    # 漏洞修复: 通过检查特定的平局返回值 (1e-4) 来正确处理平局
                     if math.isclose(game_result, 1e-4, rel_tol=1e-6):
                         draws += 1
                     elif game_result > 0:  # Win for P1
@@ -158,5 +145,5 @@ class Arena:
             pbar.update(1)
         pbar.close()
 
-        self._print_final_boards(boards, desc)
+        #self._print_final_boards(boards, desc)
         return wins, losses, draws
