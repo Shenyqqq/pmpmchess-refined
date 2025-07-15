@@ -45,53 +45,65 @@ class Coach:
 
     def execute_episode_batch(self):
         """
-        Performs one batch of self-play episodes, generating training data.
-        This batch is either a "fast" or "deep" simulation.
-
-        Returns:
-            tuple: (training_examples, is_deep_simulation_flag)
+        Performs one batch of self-play episodes.
+        For each move, it randomly decides whether to use a "fast" or "deep" MCTS search.
+        Only data from "deep" searches is collected for training.
         """
-        is_deep_simulation = np.random.rand() < self.args.get('deepProb', 0.25)
-
-        if is_deep_simulation:
-            num_sims = self.args.get('deepNumMCTSSims', 200)
-            desc = "Deep Self-Play (Data Saved)"
-        else:
-            num_sims = self.args.get('fastNumMCTSSims', 50)
-            desc = "Fast Self-Play (Data Discarded)"
-
         num_games = self.args.get('numParallelGames', 8)
         initial_results = [self.game.getInitialBoard() for _ in range(num_games)]
         boards = [np.array(res[0], dtype=np.float32).reshape(13, 9, 9) for res in initial_results]
         hashes = [res[1] for res in initial_results]
         current_players = [1] * num_games
         dones = np.array([False] * num_games)
-        episode_histories = [[] for _ in range(num_games)]
 
-        pbar = tqdm(total=self.args.max_rounds, desc=desc, leave=False)
+        # --- 改动: 'deep_move_histories' 只用来存储深度模拟产生的数据 ---
+        # 结构: [game_1_deep_moves, game_2_deep_moves, ...]
+        # 其中 game_i_deep_moves = [(canonical_board, player, pi), ...]
+        deep_move_histories = [[] for _ in range(num_games)]
+
+        pbar = tqdm(total=self.args.max_rounds, desc="Self-Play Batch", leave=False)
         rounds_played = 0
 
         while not dones.all():
             rounds_played += 1
             if rounds_played > self.args.max_rounds: break
+
             active_indices = np.where(dones == False)[0]
             if len(active_indices) == 0: break
+
+            # --- 改动核心: 在每次落子前，进行随机决策 ---
+            is_deep_simulation = np.random.rand() < self.args.get('deepProb', 0.25)
+            if is_deep_simulation:
+                num_sims = self.args.get('deepNumMCTSSims', 200)
+            else:
+                num_sims = self.args.get('fastNumMCTSSims', 50)
+            # --- 改动核心结束 ---
+
             canonical_boards, canonical_hashes = [], []
             for i in active_indices:
                 c_board, c_hash = self.game.getCanonicalForm(boards[i], hashes[i], current_players[i])
                 canonical_boards.append(np.array(c_board, dtype=np.float32).reshape(13, 9, 9))
                 canonical_hashes.append(c_hash)
+
             temp = 1 if rounds_played < self.args.get('tempThreshold', 15) else 0
             mcts_args = katago_cpp_core.MCTSArgs()
-            mcts_args.numMCTSSims = num_sims
+            mcts_args.numMCTSSims = num_sims  # 使用本次循环决定的模拟次数
             mcts_args.cpuct, mcts_args.dirichletAlpha, mcts_args.epsilon, mcts_args.factor_winloss = self.args.cpuct, self.args.dirichletAlpha, self.args.epsilon, self.args.factor_winloss
             mcts = katago_cpp_core.MCTS(self.game, self.nnet.predict_batch, mcts_args)
 
             seeds = np.random.randint(0, 2 ** 32 - 1, size=len(canonical_boards), dtype=np.uint32)
             all_pis = mcts.getActionProbs(canonical_boards, canonical_hashes, seeds.tolist(), temp=temp)
+
             for i, pi in enumerate(all_pis):
                 active_idx = active_indices[i]
-                episode_histories[active_idx].append([canonical_boards[i], current_players[active_idx], pi])
+
+                # --- 改动: 只有在深度模拟时，才记录训练数据 ---
+                if is_deep_simulation:
+                    # 记录 (棋盘状态, 当前玩家, 策略)
+                    # 最终的 V 值 (胜负结果) 在对局结束后统一添加
+                    deep_move_histories[active_idx].append([canonical_boards[i], current_players[active_idx], pi])
+
+                # 无论是否为深度模拟，都需要执行落子来推进游戏
                 action = np.random.choice(len(pi), p=pi)
                 next_board, next_player, next_hash = self.game.getNextState(boards[active_idx],
                                                                             current_players[active_idx], action)
@@ -104,14 +116,21 @@ class Coach:
             pbar.update(1)
         pbar.close()
 
+        # --- 对局结束后，整理所有记录的深度模拟数据，形成最终的训练样本 ---
         all_train_examples = []
         for i in range(num_games):
+            # 如果这个游戏没有任何深度模拟的落子，则直接跳过
+            if not deep_move_histories[i]:
+                continue
+
             game_result_win_loss, game_result_score = self.game.getGameEnded(boards[i], 1), self.game.getScore(
                 boards[i], 1)
             score_dist_target = np.zeros(self.nnet.max_score * 2 + 1, dtype=np.float32)
             score_idx = int(round(game_result_score)) + self.nnet.max_score
             if 0 <= score_idx < len(score_dist_target): score_dist_target[score_idx] = 1.0
-            for canonical_board, player, pi in episode_histories[i]:
+
+            # 遍历这盘棋中所有被记录的深度模拟数据
+            for canonical_board, player, pi in deep_move_histories[i]:
                 symmetries = self.game.getSymmetries(canonical_board, pi)
                 final_ownership_map = (boards[i][2, :, :] - boards[i][3, :, :]) * player
                 ownership_symmetries = []
@@ -120,6 +139,7 @@ class Coach:
                     ownership_symmetries.append(temp_map)
                     ownership_symmetries.append(np.fliplr(temp_map))
                     temp_map = np.rot90(temp_map, k=-1)
+
                 for j in range(len(symmetries)):
                     sym_board_list, sym_pi_list = symmetries[j]
                     sym_board = np.array(sym_board_list, dtype=np.float32).reshape(13, 9, 9)
@@ -128,7 +148,7 @@ class Coach:
                     win_loss_target = game_result_win_loss * player
                     all_train_examples.append((sym_board, sym_pi, win_loss_target, score_dist_target, sym_ownership))
 
-        return all_train_examples, is_deep_simulation
+        return all_train_examples
 
     def learn(self):
         """
@@ -146,22 +166,16 @@ class Coach:
 
             if not self.skip_first_self_play or i > 1:
                 iteration_train_examples = deque(maxlen=self.args.get('maxlenOfQueue', 200000))
-                num_eps = self.args.get('numEps', 1)
-                num_deep_episodes = 0
 
-                print(f"Starting self-play for {num_eps} episode batches...")
-                sys.stdout.flush()
-
-                eps_tqdm = tqdm(range(num_eps), desc="Collecting Self-Play Episodes")
+                # --- 改动: 简化数据收集循环 ---
+                # execute_episode_batch 返回的已经是筛选过的深度模拟数据
+                eps_tqdm = tqdm(range(self.args.get('numEps', 1)), desc="Collecting Self-Play Episodes")
                 for _ in eps_tqdm:
-                    new_examples, is_deep = self.execute_episode_batch()
-                    if is_deep:
-                        iteration_train_examples.extend(new_examples)
-                        num_deep_episodes += 1
+                    iteration_train_examples.extend(self.execute_episode_batch())
 
-                print(
-                    f"\nFinished self-play. Collected {len(iteration_train_examples)} training examples from {num_deep_episodes} deep-simulation episode batches.")
+                print(f"\nFinished self-play. Collected {len(iteration_train_examples)} new training examples.")
                 sys.stdout.flush()
+                # --- 改动结束 ---
 
                 self.train_examples_history.append(iteration_train_examples)
                 if len(self.train_examples_history) > self.args.get('numItersForTrainExamplesHistory', 20):
@@ -171,7 +185,7 @@ class Coach:
             train_examples = []
             for e in self.train_examples_history: train_examples.extend(e)
             if not train_examples:
-                print("No training examples generated. Skipping training for this iteration.")
+                print("No training examples available. Skipping training for this iteration.")
                 continue
             np.random.shuffle(train_examples)
             self.nnet.save_checkpoint(folder=self.args['checkpoint'], filename='temp.pth.tar')
@@ -181,7 +195,9 @@ class Coach:
 
             print('PITTING AGAINST PREVIOUS VERSION')
             mcts_args = katago_cpp_core.MCTSArgs()
-            mcts_args.numMCTSSims, mcts_args.cpuct, mcts_args.dirichletAlpha, mcts_args.epsilon = self.args.numMCTSSims, self.args.cpuct, 0, 0
+            # 在Arena评估时，使用固定的、较高的模拟次数以保证评估的稳定性
+            mcts_args.numMCTSSims = self.args.get('arenaNumMCTSSims', self.args.get('deepNumMCTSSims', 200))
+            mcts_args.cpuct, mcts_args.dirichletAlpha, mcts_args.epsilon = self.args.cpuct, 0, 0
             nnet_mcts = katago_cpp_core.MCTS(self.game, self.nnet.predict_batch, mcts_args)
             pnet_mcts = katago_cpp_core.MCTS(self.game, self.pnet.predict_batch, mcts_args)
             arena = Arena(nnet_mcts, pnet_mcts, self.game, self.args)
@@ -250,6 +266,23 @@ class Coach:
             self.train_examples_history = Unpickler(f).load()
 
         # 设置标志位，在下一轮学习中跳过自对弈环节
-        self.skip_first_self_play = True
+        self.skip_first_self_play = False
         print("Training examples loaded successfully.")
         return True
+
+# # --- 新模型与初始模型对战 ---
+# print('PITTING AGAINST INITIAL VERSION')
+# initial_net_mcts = katago_cpp_core.MCTS(self.game, self.initial_net.predict_batch, mcts_args)
+# arena_vs_initial = Arena(nnet_mcts, initial_net_mcts, self.game, self.args)
+# nwins_initial, iwins, draws_initial = arena_vs_initial.play_games_batch(self.args.get('initialCompare', 40))
+#
+# # --- 记录对战结果到 TensorBoard ---
+# self.writer.add_scalar('ArenaVsInitial/NewNetWins', nwins_initial, i)
+# self.writer.add_scalar('ArenaVsInitial/InitialNetWins', iwins, i)
+# self.writer.add_scalar('ArenaVsInitial/Draws', draws_initial, i)
+# if (nwins_initial + iwins) > 0:
+#     win_rate_initial = float(nwins_initial) / (nwins_initial + iwins)
+#     self.writer.add_scalar('ArenaVsInitial/WinRate', win_rate_initial, i)
+#
+# print(f'NEW/INITIAL WINS : {nwins_initial} / {iwins} ; DRAWS : {draws_initial}')
+# sys.stdout.flush()
