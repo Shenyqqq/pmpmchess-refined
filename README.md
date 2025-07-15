@@ -28,7 +28,7 @@ Here's the lowdown on the rules:
     It's simple! When the game ends (after all 50 turns are up), the player who has captured more squares of territory is crowned the winner.
 
 ## Demonstration
-![gif](https://github.com/Shenyqqq/pmpmchess-refined/gif/1.gif](https://raw.githubusercontent.com/Shenyqqq/pmpmchess-refined/master/gif/1.gif)
+![gif](https://raw.githubusercontent.com/Shenyqqq/pmpmchess-refined/master/gif/1.gif)
 
 ## Key Architectural Upgrades
 
