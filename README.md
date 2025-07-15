@@ -1,21 +1,30 @@
-\<p align="center"\>
-\<a href="[https://huggingface.co/spaces/gumigumi/pmpmchess-refined](https://www.google.com/search?q=https://huggingface.co/spaces/gumigumi/pmpmchess-refined)"\>\<img src="[https://img.shields.io/badge/%F0%9F%A4%97%20hugging%20face-Spaces-blue?style=for-the-badge](https://img.shields.io/badge/%F0%9F%A4%97%20hugging%20face-Spaces-blue?style=for-the-badge)" alt="Hugging Face Spaces"\>\</a\>
-\</p\>
-
 # Pmpmchess-Refined
 
 Pmpmchess-Refined is a state-of-the-art AI for the game of Pmpmchess, completely re-engineered from the ground up. Inspired by the pioneering architecture of KataGo, this project moves beyond the original AlphaZero framework to deliver much higher performance.
 
 The core of this project features a high-performance C++ engine and a sophisticated, multi-headed neural network. This new architecture accelerates the self-play data generation process by over 30 times, enabling the training of a human-competitive AI in just 4 hours on consumer hardware.
 
-## Game Rules
+Click here to play right now!
+[🤗Hugging Face](https://huggingface.co/spaces/gumigumi/pmpmchess)
 
-Pmpmchess is a captivating mini-game from Hypergryph's indie title Popucom. It cleverly combines the line-up objective of Gomoku (Five-in-a-Row) with the territory-capture mechanics of Reversi (Othello).
 
-  * **Board & Turns:** The game is played on a 9x9 board. It lasts for a total of 50 turns, with each player placing 25 pieces.
-  * **Capture Mechanism:** When a player forms an unbroken line of three of their pieces, they capture that entire line (row, column, or diagonal). However, a capture is blocked if the line contains any of the opponent's pieces.
-  * **Legal Moves:** A player can place a piece on any empty square or any square within their own captured territory.
-  * **Winning Condition:** The winner is the player who has captured more squares of territory by the end of the game.
+## 🎮 How to Play Pmpmchess 
+
+Ever played Gomoku (Five-in-a-Row) or Reversi (Othello)? Pmpmchess is a super cool mini-game from the indie title *Popucom* that cleverly mashes them together! The goal is to both line up your pieces *and* capture territory.
+
+Here's the lowdown on the rules:
+
+* **♟️ The Basics (Board & Turns)**
+    The game takes place on a 9x9 board. It's a quick match, lasting exactly 50 turns, which means you and your opponent each get to place 25 pieces.
+
+* **💥 How to Capture**
+    Get three of your pieces in an unbroken line (horizontally, vertically, or diagonally) and—BAM!—you capture all three of those squares as your territory. But watch out! If your opponent has even one piece in that potential line, your capture is blocked.
+
+* **🤔 Where You Can Move**
+    You have two options for placing a piece: any empty square on the board, OR any square inside territory you've already captured. That's right, you can reuse your own turf!
+
+* **🏆 How You Win**
+    It's simple! When the game ends (after all 50 turns are up), the player who has captured more squares of territory is crowned the winner.
 
 ## Key Architectural Upgrades
 
