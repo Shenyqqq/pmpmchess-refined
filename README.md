@@ -26,6 +26,9 @@ Here's the lowdown on the rules:
 * **🏆 How You Win**
     It's simple! When the game ends (after all 50 turns are up), the player who has captured more squares of territory is crowned the winner.
 
+## Demonstration
+[](https://github.com/Shenyqqq/pmpmchess-refined/tree/master/gif)
+
 ## Key Architectural Upgrades
 
 This project represents a fundamental overhaul of the original pmpmchessAI. The following enhancements form the backbone of its superior performance and intelligence.
