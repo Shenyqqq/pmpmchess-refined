@@ -7,7 +7,7 @@ import sys
 import os
 import torch
 import math
-import threading  # <-- 1. 引入 threading 模块
+import threading
 import katago_cpp_core
 from nn_wrapper import NNetWrapper
 from nn_model import NNet
@@ -45,7 +45,8 @@ args = dotdict({
     'num_channels': 13,
     'num_filters': 128,
     'num_residual_blocks': 8,
-    'numMCTSSims': 800,
+    'numMCTSSims': 800,  # AI落子时的模拟次数
+    'numMCTSSimsAnal': 200,  # 分析功能使用的模拟次数
     'cpuct': 1.0,
     'epsilon': 0,
     'checkpoint': './checkpoint/',
@@ -87,14 +88,19 @@ class GameGUI:
 
         self.game_state = 'MENU'
         self.game_mode = None
+        self.game_over = True  # 初始化 game_over 状态
 
         self.analysis_data = None
         self.show_analysis = False
 
-        # --- 2. 增加AI状态变量 ---
+        # --- AI 移动线程相关状态 ---
         self.is_ai_thinking = False
         self.ai_move_result = None
-        self.ai_thread = None
+
+        # --- MCTS 分析线程相关状态 ---
+        self.is_analysis_running = False
+        self.analysis_result = None
+        self.analysis_thread = None
 
         self.clock = pygame.time.Clock()
         self._initialize_neural_net_and_mcts()
@@ -110,12 +116,21 @@ class GameGUI:
             print(f"错误：找不到模型文件 {os.path.join(args.checkpoint, args.load_model_file)}")
             sys.exit(1)
 
-        mcts_args = katago_cpp_core.MCTSArgs()
-        mcts_args.numMCTSSims = args.numMCTSSims
-        mcts_args.cpuct = args.cpuct
-        mcts_args.epsilon = args.epsilon
-        self.mcts = katago_cpp_core.MCTS(self.game_core, self.nnet.predict_batch, mcts_args)
-        print("MCTS引擎初始化成功。")
+        # MCTS for AI's actual moves
+        mcts_args_move = katago_cpp_core.MCTSArgs()
+        mcts_args_move.numMCTSSims = args.numMCTSSims
+        mcts_args_move.cpuct = args.cpuct
+        mcts_args_move.epsilon = args.epsilon
+        self.mcts = katago_cpp_core.MCTS(self.game_core, self.nnet.predict_batch, mcts_args_move)
+        print(f"AI移动MCTS引擎初始化成功 (模拟次数: {args.numMCTSSims})。")
+
+        # A separate MCTS instance for the analysis feature
+        mcts_args_anal = katago_cpp_core.MCTSArgs()
+        mcts_args_anal.numMCTSSims = args.numMCTSSimsAnal
+        mcts_args_anal.cpuct = args.cpuct
+        mcts_args_anal.epsilon = args.epsilon
+        self.mcts_analysis = katago_cpp_core.MCTS(self.game_core, self.nnet.predict_batch, mcts_args_anal)
+        print(f"局面分析MCTS引擎初始化成功 (模拟次数: {args.numMCTSSimsAnal})。")
 
     def _create_buttons(self):
         panel_x = BOARD_DIM + MARGIN * 2
@@ -139,43 +154,71 @@ class GameGUI:
         self.winner = 0
         self.analysis_data = None
         self.game_state = 'PLAYING'
-        # 重置AI状态
         self.is_ai_thinking = False
         self.ai_move_result = None
+        self.is_analysis_running = False
+        self.analysis_result = None
         print(f"游戏开始，模式: {mode}")
+        if self.show_analysis:
+            self.run_deep_analysis()
 
     def go_to_menu(self):
         self.game_state = 'MENU'
-        # 离开游戏时重置AI状态，防止线程结果影响菜单
         self.is_ai_thinking = False
-        self.ai_move_result = None
+        self.is_analysis_running = False
+        self.game_over = True  # 返回菜单时，将游戏标记为结束
 
     def toggle_analysis(self):
         self.show_analysis = not self.show_analysis
-        if self.show_analysis:
-            self.run_analysis()
+        if self.show_analysis and self.game_state == 'PLAYING':
+            self.run_deep_analysis()
         else:
             self.analysis_data = None
+            self.is_analysis_running = False
 
-    def run_analysis(self):
-        if self.game_over:
-            self.analysis_data = None
-            return
-        canonical_board, _ = self.game_core.getCanonicalForm(self.board, self.hash, self.current_player)
+    def _deep_analysis_task(self):
+        """在后台线程中运行MCTS分析"""
+        print(f"为玩家 {self.current_player} 运行当前局面的深度分析 (模拟次数: {args.numMCTSSimsAnal})...")
+        # 1. 从MCTS获取策略向量
+        canonical_board, canonical_hash = self.game_core.getCanonicalForm(self.board, self.hash, self.current_player)
+        seeds = np.random.randint(0, 2 ** 32 - 1, size=1, dtype=np.uint32)
+        # --- 使用专用的分析MCTS实例 ---
+        pi = self.mcts_analysis.getActionProbs([canonical_board], [canonical_hash], seeds.tolist(), temp=1)[0]
+
+        # 2. 从神经网络获取价值、得分等信息
         canonical_board_tensor = torch.FloatTensor(canonical_board).contiguous().to(self.nnet.device)
-        batch = canonical_board_tensor.unsqueeze(0)
-        batch = batch.cpu()
-        pi, v, score, score_var, ownership = self.nnet.predict_batch(batch)
-        self.analysis_data = {
-            'pi': pi[0], 'v': (v[0][0] + 1) / 2, 'score': score[0][0],
-            'score_var': score_var[0][0], 'ownership': ownership[0][0]
+        batch = canonical_board_tensor.unsqueeze(0).cpu()
+        _, v, score, score_var, ownership = self.nnet.predict_batch(batch)
+
+        # 3. 组合成最终的分析数据
+        analysis_dict = {
+            'pi': pi,  # 使用MCTS的策略
+            'v': (v[0][0] + 1) / 2,
+            'score': score[0][0],
+            'score_var': score_var[0][0],
+            'ownership': ownership[0][0]
         }
         if self.current_player == -1:
-            self.analysis_data['ownership'] *= -1
+            analysis_dict['ownership'] *= -1
+
+        self.analysis_result = analysis_dict
+
+    def run_deep_analysis(self):
+        """启动MCTS深度分析线程"""
+        if self.is_analysis_running or self.game_over or self.game_state != 'PLAYING':
+            return
+        # --- 修复: 立即清除旧的分析数据以防止残留显示 ---
+        self.analysis_data = None
+        self.is_analysis_running = True
+        self.analysis_result = None
+        self.analysis_thread = threading.Thread(target=self._deep_analysis_task)
+        self.analysis_thread.daemon = True
+        self.analysis_thread.start()
 
     def run(self):
         while True:
             self.handle_events()
+            # --- 修复: 只有在游戏进行中才更新游戏逻辑 ---
             if self.game_state == 'PLAYING':
                 self.update_game()
             self.draw()
@@ -200,17 +243,21 @@ class GameGUI:
                     self.handle_board_click(event.pos)
 
     def update_game(self):
-        """处理游戏逻辑更新，例如AI移动"""
         if self.game_over: return
 
-        # --- 4. 修改主更新循环 ---
-        # 检查AI是否完成了思考
+        # 检查AI移动线程是否完成
         if self.ai_move_result is not None:
             action = self.ai_move_result
             self.perform_move(action)
-            # 重置状态，为AI的下一回合做准备
             self.ai_move_result = None
             self.is_ai_thinking = False
+
+        # 检查分析线程是否完成
+        if self.analysis_result is not None:
+            self.analysis_data = self.analysis_result
+            self.analysis_result = None
+            self.is_analysis_running = False
+            print("深度分析完成，已更新界面。")
 
         is_ai_turn = (self.game_mode == 'AI_vs_AI') or \
                      (self.game_mode == 'P_vs_AI_Black' and self.current_player == -1) or \
@@ -242,7 +289,6 @@ class GameGUI:
         self.draw_side_panel()
 
     def draw_board_and_pieces(self):
-        # 绘制背景和网格线
         board_reshaped = self.board.reshape(13, BOARD_SIZE, BOARD_SIZE)
         for r in range(BOARD_SIZE):
             for c in range(BOARD_SIZE):
@@ -258,7 +304,6 @@ class GameGUI:
             pygame.draw.line(self.screen, C_GRID, (MARGIN, MARGIN + i * CELL_SIZE),
                              (MARGIN + BOARD_DIM, MARGIN + i * CELL_SIZE))
 
-        # 绘制棋子
         for r in range(BOARD_SIZE):
             for c in range(BOARD_SIZE):
                 center = (MARGIN + c * CELL_SIZE + CELL_SIZE // 2, MARGIN + r * CELL_SIZE + CELL_SIZE // 2)
@@ -270,12 +315,17 @@ class GameGUI:
     def draw_analysis_overlay(self):
         if not self.analysis_data: return
         overlay = pygame.Surface((BOARD_DIM, BOARD_DIM), pygame.SRCALPHA)
-        max_pi = np.max(self.analysis_data['pi'])
+
+        pi_values = self.analysis_data['pi']
+        if not isinstance(pi_values, np.ndarray):
+            pi_values = np.array(pi_values)
+
+        max_pi = np.max(pi_values)
         if max_pi > 0:
-            for i, prob in enumerate(self.analysis_data['pi']):
-                if prob > 0.01:
+            for i, prob in enumerate(pi_values):
+                if prob > 0.001:
                     r, c = i // BOARD_SIZE, i % BOARD_SIZE
-                    alpha = int(200 * (prob / max_pi))
+                    alpha = int(220 * (prob / max_pi))
                     color = (34, 139, 34, alpha)
                     pygame.draw.rect(overlay, color, (c * CELL_SIZE, r * CELL_SIZE, CELL_SIZE, CELL_SIZE))
 
@@ -313,25 +363,27 @@ class GameGUI:
             info_texts.append(winner_text)
         else:
             player_name = "红方" if self.current_player == 1 else "蓝方"
-            is_human_turn = (self.game_mode == 'P_vs_P') or \
-                            (self.game_mode == 'P_vs_AI_Black' and self.current_player == 1) or \
-                            (self.game_mode == 'P_vs_AI_White' and self.current_player == -1)
-
-            if is_human_turn:
-                turn_text = "当前玩家: 你"
-            else:
-                turn_text = "当前玩家: AI 思考中..."
+            turn_text = f"当前玩家: {player_name}"
+            if self.is_ai_thinking:
+                turn_text = "AI 思考中..."
             info_texts.append(turn_text)
 
         for i, text in enumerate(info_texts):
             surf = self.font_info.render(text, True, C_INFO_TEXT)
             self.screen.blit(surf, (panel_x + 20, 60 + i * 35))
 
-        if self.show_analysis and self.analysis_data:
-            analysis_texts = [
-                "--- AI 分析 ---", f"胜率 (Value): {self.analysis_data['v']:.2%}",
-                f"预测得分 (Score): {self.analysis_data['score']:.2f} ± {math.sqrt(self.analysis_data['score_var']):.2f}",
-            ]
+        if self.show_analysis:
+            if self.is_analysis_running:
+                analysis_texts = ["--- AI 分析 ---", "分析中..."]
+            elif self.analysis_data:
+                analysis_texts = [
+                    "--- AI 深度分析 ---",
+                    f"胜率 (Value): {self.analysis_data['v']:.2%}",
+                    f"预测得分 (Score): {self.analysis_data['score']:.2f} ± {math.sqrt(self.analysis_data['score_var']):.2f}",
+                ]
+            else:
+                analysis_texts = ["--- AI 分析 ---", "等待分析..."]
+
             for i, text in enumerate(analysis_texts):
                 surf = self.font_info.render(text, True, C_INFO_TEXT)
                 self.screen.blit(surf, (panel_x + 20, 220 + i * 35))
@@ -352,44 +404,35 @@ class GameGUI:
             else:
                 print(f"无效落子位置: ({r}, {c})")
 
-    # --- 3. 重构AI移动逻辑 ---
     def _ai_move_task(self):
-        """这个函数在子线程中运行，执行耗时的MCTS计算。"""
         canonical_board, canonical_hash = self.game_core.getCanonicalForm(self.board, self.hash, self.current_player)
         seeds = np.random.randint(0, 2 ** 32 - 1, size=1, dtype=np.uint32)
-
-        # 这是阻塞操作，但在子线程中，所以不会冻结UI
         pi = self.mcts.getActionProbs([canonical_board], [canonical_hash], seeds.tolist(), temp=0)[0]
-
         action = np.argmax(pi)
-
-        # 将结果存入实例变量，以便主线程可以获取
         self.ai_move_result = action
 
     def ai_move(self):
-        """启动AI思考的子线程。"""
+        if self.is_ai_thinking: return
         self.is_ai_thinking = True
-        self.ai_move_result = None  # 清除上一回合的结果
-
-        # 创建并启动子线程
-        self.ai_thread = threading.Thread(target=self._ai_move_task)
-        self.ai_thread.daemon = True  # 确保主程序退出时子线程也会退出
-        self.ai_thread.start()
+        self.ai_move_result = None
+        ai_thread = threading.Thread(target=self._ai_move_task)
+        ai_thread.daemon = True
+        ai_thread.start()
 
     def perform_move(self, action):
-        """执行一个落子动作并更新游戏状态。"""
         next_board_list, next_player, next_hash = self.game_core.getNextState(self.board, self.current_player, action)
         self.board = np.array(next_board_list, dtype=np.float32)
         self.current_player = next_player
         self.hash = next_hash
-
-        self.winner = self.game_core.getGameEnded(self.board, self.current_player )
+        self.winner = self.game_core.getGameEnded(self.board, self.current_player)
         if self.winner != 0:
             self.game_over = True
             self.game_state = 'GAME_OVER'
+            self.is_analysis_running = False  # 游戏结束，停止分析
 
-        if self.show_analysis:
-            self.run_analysis()
+        # 移动后，如果分析是开启的，就为新局面重新运行深度分析
+        if self.show_analysis and not self.game_over:
+            self.run_deep_analysis()
 
 
 if __name__ == '__main__':
