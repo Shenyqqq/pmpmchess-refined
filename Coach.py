@@ -126,6 +126,8 @@ class Coach:
         for i in range(1, self.args.get('numIters', 100) + 1):
             print(f'------ ITERATION {i} ------')
             sys.stdout.flush()
+
+            # 如果 skip_first_self_play 为 False，或者不是第一次迭代，则执行自对弈
             if not self.skip_first_self_play or i > 1:
                 iteration_train_examples = deque(maxlen=self.args.get('maxlenOfQueue', 200000))
                 eps_tqdm = tqdm(range(self.args.get('numEps', 1)), desc="Collecting Self-Play Episodes")
@@ -135,6 +137,7 @@ class Coach:
                 if len(self.train_examples_history) > self.args.get('numItersForTrainExamplesHistory',
                                                                     20): self.train_examples_history.pop(0)
                 self.save_train_examples(i - 1)
+
             train_examples = []
             for e in self.train_examples_history: train_examples.extend(e)
             if not train_examples:
@@ -198,11 +201,20 @@ class Coach:
         with open(filename, "wb+") as f: Pickler(f).dump(self.train_examples_history)
 
     def load_train_examples(self):
+        """
+        加载指定模型附带的训练数据。
+        """
         model_file = os.path.join(self.args['load_folder_file'][0], self.args['load_folder_file'][1])
         examples_file = model_file + ".examples"
         if not os.path.isfile(examples_file):
             print(f'File "{examples_file}" with train examples not found!')
             return False
-        with open(examples_file, "rb") as f: self.train_examples_history = Unpickler(f).load()
+
+        print(f"Loading training examples from file: {examples_file}")
+        with open(examples_file, "rb") as f:
+            self.train_examples_history = Unpickler(f).load()
+
+        # 设置标志位，在下一轮学习中跳过自对弈环节
         self.skip_first_self_play = True
+        print("Training examples loaded successfully.")
         return True
