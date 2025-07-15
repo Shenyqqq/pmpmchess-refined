@@ -1,3 +1,4 @@
+[中文](https://github.com/Shenyqqq/pmpmchess-refined/blob/master/README.md.zh)[English](https://github.com/Shenyqqq/pmpmchess-refined/blob/master/README.md)
 # 泡姆棋（重制版）
 
 Pmpmchess-Refined 是针对 Pmpmchess 游戏开发的最先进的 AI，它完全从零开始重新设计。该项目受到 KataGo 开创性架构的启发，超越了最初的 AlphaZero 框架，提供了更卓越的性能。
