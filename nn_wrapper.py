@@ -23,6 +23,14 @@ class NNetWrapper:
     def train(self, examples, iteration, writer):  # --- 修改: 接收 iteration 和 writer ---
         optimizer = optim.Adam(self.nnet.parameters(), lr=self.args.get('lr', 0.001))
 
+        epochs = self.args.get('epochs',10)
+        batch_count = len(examples)/self.args.get('batch_size',64)
+        scheduler = torch.optim.lr_scheduler.OneCycleLR(
+            optimizer,
+            max_lr=self.args.get('lr', 0.001),
+            total_steps=epochs * batch_count
+        )
+
         for epoch in range(self.args.get('epochs', 10)):
             print(f'EPOCH ::: {epoch + 1}')
             self.nnet.train()
@@ -65,6 +73,7 @@ class NNetWrapper:
                 optimizer.zero_grad()
                 total_loss.backward()
                 optimizer.step()
+                scheduler.step()
                 t.set_postfix(Loss=total_loss.item())
 
             # --- 新增: 在每个 epoch 结束后记录平均损失 ---
@@ -74,6 +83,9 @@ class NNetWrapper:
             writer.add_scalar('Loss/Value', v_loss_acc / batch_count, global_step)
             writer.add_scalar('Loss/Ownership', own_loss_acc / batch_count, global_step)
             writer.add_scalar('Loss/Score', score_loss_acc / batch_count, global_step)
+            current_lr = optimizer.param_groups[0]['lr']
+            global_step = (iteration - 1) * epochs + epoch
+            writer.add_scalar('LearningRate', current_lr, global_step)
 
     def predict_batch(self, boards):
         boards_np = np.array(boards, dtype=np.float32)
