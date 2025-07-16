@@ -1,7 +1,7 @@
 [中文](https://github.com/Shenyqqq/pmpmchess-refined/blob/master/README.zh.md)[English](https://github.com/Shenyqqq/pmpmchess-refined/blob/master/README.md)
-# Pmpmchess-Refined
+# PmpmchessAI-Refined
 
-Pmpmchess-Refined is a state-of-the-art AI for the game of Pmpmchess, completely re-engineered from the ground up. Inspired by the pioneering architecture of KataGo, this project moves beyond the original AlphaZero framework to deliver much higher performance.
+Pmpmchess-Refined is upgrading from old version project [PmpmchessAI](https://github.com/Shenyqqq/pmpmchessAI), completely re-engineered from the ground up. Inspired by the pioneering architecture of KataGo, this project moves beyond the original AlphaZero framework to deliver much higher performance.
 
 The core of this project features a high-performance C++ engine and a sophisticated, multi-headed neural network. This new architecture accelerates the self-play data generation process by over 30 times, enabling the training of a human-competitive AI in just 4 hours on consumer hardware.
 
