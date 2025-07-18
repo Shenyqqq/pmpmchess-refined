@@ -8,24 +8,23 @@ The core of this project features a high-performance C++ engine and a sophistica
 Click here to play right now!
 [🤗Hugging Face](https://huggingface.co/spaces/gumigumi/pmpmchess)
 
+## 🎮 How to play
 
-## 🎮 How to Play Pmpmchess 
+Have you ever played Gomoku or Othello? Pmpmchess is a mini-game from the indie game *Popucom* that cleverly blends the gameplay of both! The goal is to connect three of your pieces to claim territory.
 
-Ever played Gomoku (Five-in-a-Row) or Reversi (Othello)? Pmpmchess is a super cool mini-game from the indie title *Popucom* that cleverly mashes them together! The goal is to both line up your pieces *and* capture territory.
+Here's a detailed breakdown of the rules:
 
-Here's the lowdown on the rules:
+* **♟️ Board and Turns**
+    The game is played on a 9x9 board. It's a quick match, lasting a total of 50 turns, meaning you and your opponent each get 25 moves.
 
-* **♟️ The Basics (Board & Turns)**
-    The game takes place on a 9x9 board. It's a quick match, lasting exactly 50 turns, which means you and your opponent each get to place 25 pieces.
+* **💥 How to Claim Territory**
+    Connect three of your pieces in an unbroken straight line (horizontally, vertically, or diagonally), and the squares along that line become your territory. But be careful! If your opponent has even one piece on your potential line, your claim will be blocked.
 
-* **💥 How to Capture**
-    Get three of your pieces in an unbroken line (horizontally, vertically, or diagonally) and—BAM!—you capture this line as your territory. But watch out! If your opponent has even one piece in that potential line, your capture is blocked.
+* **🤔 Action Rules**
+    You have two options for placing your pieces: any empty space on the board, or any space within territory you've already claimed. That's right, you can reuse your own turf!
 
-* **🤔 Where You Can Move**
-    You have two options for placing a piece: any empty square on the board, OR any square inside territory you've already captured. That's right, you can reuse your own turf!
-
-* **🏆 How You Win**
-    It's simple! When the game ends (after all 50 turns are up), the player who has captured more squares of territory is crowned the winner.
+* **🏆 Winning Condition**
+    It's simple! When the game ends (all 50 turns are used up), the player who has claimed more territory squares is the winner.
 
 ## Demonstration
 ![gif](https://raw.githubusercontent.com/Shenyqqq/pmpmchess-refined/master/gif/1.gif)
