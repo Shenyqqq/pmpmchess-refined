@@ -7,28 +7,30 @@ from torch.utils.tensorboard import SummaryWriter
 
 args = dotdict({
     'numIters': 50,
-    'numEps': 1,  # 每个迭代的自对弈批次数
+    'numEps': 8,  # 每个迭代的自对弈批次数
     'tempThreshold': 15,
     'tempArena': 15,
-    'updateThreshold': 0.6,
+    'updateThreshold': 0.55,
     'maxlenOfQueue': 200000,
+    'maxTrainExamples': 3000000,
     'deepProb': 0.25,  # 进行深度模拟的概率
-    'deepNumMCTSSims': 800,  # 深度模拟的MCTS次数
-    'fastNumMCTSSims': 100,
-    'arenaCompare': 64,  # 新旧模型对抗的棋局数
+    'deepNumMCTSSims': 900,  # 深度模拟的MCTS次数
+    'fastNumMCTSSims': 150,
+    'arenaNumMCTSSims': 400,
+    'arenaCompare': 100,  # 新旧模型对抗的棋局数
     'cpuct': 1.5,
     'dirichletAlpha': 0.1,
     'epsilon': 0.25,
     'max_rounds': 50,
     'checkpoint': './temp/',
     'log_dir': './logs/',
-    'load_model': False,
-    'load_separate_examples': True,
-    'load_separate_file': 'save/checkpoint_15.pth.tar.examples',
-    'load_folder_file': ('./save/', 'checkpoint_9.pth.tar'),
+    'load_model': True,
+    'load_separate_examples': False,
+    'load_separate_file': 'save/checkpoint_4.pth.tar.examples',
+    'load_folder_file': ('./save/', 'checkpoint_2.pth.tar'),
     'numItersForTrainExamplesHistory': 20,
-    'numParallelGames': 128,  # 并行游戏数
-    'lr': 0.001,
+    'numParallelGames': 240,  # 并行游戏数
+    'lr': 0.00001,
     'epochs': 10,
     'batch_size': 64,
     'num_channels': 13,

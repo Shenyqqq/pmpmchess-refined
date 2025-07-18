@@ -107,7 +107,7 @@ class GameGUI:
 
     def __init__(self):
         pygame.init()
-        pygame.display.set_caption("人机对战 & 分析工具 v2.1")
+        pygame.display.set_caption("泡姆棋")
         self.screen = pygame.display.set_mode((WINDOW_WIDTH, WINDOW_HEIGHT))
         self.font_info = pygame.font.SysFont("simhei", 24)
         self.font_button = pygame.font.SysFont("simhei", 20)
@@ -212,10 +212,6 @@ class GameGUI:
         # 恢复到悔棋后的最新状态
         if self.game_history:
             last_state = self.game_history[-1]
-            # 注意：历史记录存的是落子前的状态，所以我们恢复的是上上步的状态
-            # 但perform_move又会存一次，所以逻辑要小心。
-            # 正确逻辑：恢复到悔棋后，历史记录的最后一条。
-            # 我们的perform_move在落子前保存状态，所以pop()之后，history的最后一条就是我们要恢复的状态
             prev_state = self.game_history.pop()  # 再次弹出以获取该状态，之后再添加回去
             self.board = prev_state['board']
             self.hash = prev_state['hash']
@@ -254,16 +250,10 @@ class GameGUI:
 
     def _deep_analysis_task(self):
         sims = self.sims_anal_input.text
-        temp_str = self.temp_input.text
-        try:
-            temp = float(temp_str) if temp_str else 1.0
-        except (ValueError, TypeError):
-            temp = 1.0
-        print(f"为玩家 {self.current_player} 运行深度分析 (模拟: {sims}, 温度: {temp})...")
         mcts_anal = self._create_mcts_instance(sims)
         canonical_board, canonical_hash = self.game_core.getCanonicalForm(self.board, self.hash, self.current_player)
         seeds = np.random.randint(0, 2 ** 32 - 1, size=1, dtype=np.uint32)
-        pi = mcts_anal.getActionProbs([canonical_board], [canonical_hash], seeds.tolist(), temp=temp)[0]
+        pi = mcts_anal.getActionProbs([canonical_board], [canonical_hash], seeds.tolist(), temp=1)[0]
         canonical_board_tensor = torch.FloatTensor(canonical_board).contiguous().to(self.nnet.device)
         batch = canonical_board_tensor.unsqueeze(0).cpu()
         _, v, score, score_var, ownership = self.nnet.predict_batch(batch)
@@ -435,13 +425,15 @@ class GameGUI:
         self.sims_move_input.rect.y = y_offset
         self.sims_move_input.draw(self.screen, self.font_label)
         y_offset += 40
+        self.screen.blit(self.font_label.render("温度 (行棋)", True, C_INFO_TEXT), (panel_x + 20, y_offset + 5))
+        self.temp_input.rect.y = y_offset
+        self.temp_input.draw(self.screen, self.font_label)
+        y_offset += 40
         self.screen.blit(self.font_label.render("模拟次数 (分析)", True, C_INFO_TEXT), (panel_x + 20, y_offset + 5))
         self.sims_anal_input.rect.y = y_offset
         self.sims_anal_input.draw(self.screen, self.font_label)
-        y_offset += 40
-        self.screen.blit(self.font_label.render("温度 (分析)", True, C_INFO_TEXT), (panel_x + 20, y_offset + 5))
-        self.temp_input.rect.y = y_offset
-        self.temp_input.draw(self.screen, self.font_label)
+
+
 
         for btn in self.game_buttons: btn.draw(self.screen, self.font_button)
 
@@ -458,10 +450,15 @@ class GameGUI:
 
     def _ai_move_task(self):
         sims = self.sims_move_input.text
+        temp_str = self.temp_input.text
+        try:
+            temp = float(temp_str) if temp_str else 1.0
+        except (ValueError, TypeError):
+            temp = 1.0
         mcts_move = self._create_mcts_instance(sims)
         canonical_board, canonical_hash = self.game_core.getCanonicalForm(self.board, self.hash, self.current_player)
         seeds = np.random.randint(0, 2 ** 32 - 1, size=1, dtype=np.uint32)
-        pi = mcts_move.getActionProbs([canonical_board], [canonical_hash], seeds.tolist(), temp=0)[0]
+        pi = mcts_move.getActionProbs([canonical_board], [canonical_hash], seeds.tolist(), temp=temp)[0]
         self.ai_move_result = np.argmax(pi)
 
     def ai_move(self):
@@ -482,7 +479,7 @@ class GameGUI:
         self.board = np.array(next_board_list, dtype=np.float32)
         self.current_player = next_player
         self.hash = next_hash
-        self.winner = self.game_core.getGameEnded(self.board, self.current_player * -1)
+        self.winner = self.game_core.getGameEnded(self.board, self.current_player)
         if self.winner != 0:
             self.game_over = True
             self.game_state = 'GAME_OVER'
