@@ -64,7 +64,9 @@ class Arena:
         new_net_wins = p1_starts_wins + p2_starts_losses
         prev_net_wins = p1_starts_losses + p2_starts_wins
         draws = p1_starts_draws + p2_starts_draws
-        return new_net_wins, prev_net_wins, draws
+        first_win_rate = (p1_starts_wins+p2_starts_wins)/num_games
+        second_win_rate = (p1_starts_losses+p2_starts_losses)/num_games
+        return new_net_wins, prev_net_wins, draws, first_win_rate, second_win_rate
 
     def _play_batch(self, p1_mcts, p2_mcts, num_games, desc, start_game_idx):
         """

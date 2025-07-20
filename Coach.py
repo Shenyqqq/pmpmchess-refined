@@ -7,6 +7,10 @@ from Arena import Arena
 import sys
 import katago_cpp_core
 
+import subprocess
+from onnx_converter import convert_to_onnx
+from trt_wrapper import TensorRTWrapper
+
 
 class Coach:
     """
@@ -22,6 +26,84 @@ class Coach:
         self.initial_net = self.nnet.__class__(self.game, self.nnet.nnet_class, self.args)
         self.train_examples_history = []
         self.skip_first_self_play = False
+        self.inference_net = None
+
+    def _get_inference_net(self):
+        """
+        获取用于推理的网络。优先加载TensorRT引擎。
+        如果引擎不存在或加载失败，则回退到使用PyTorch模型。
+        """
+        if self.inference_net is not None:
+            return self.inference_net
+
+        engine_path = os.path.join(self.args['checkpoint'], 'best.plan')
+        if os.path.exists(engine_path):
+            try:
+                print("Loading existing TensorRT engine for self-play...")
+                self.inference_net = TensorRTWrapper(self.game, self.nnet.args, engine_path)
+                print("TensorRT engine loaded successfully.")
+            except Exception as e:
+                print(f"!!! Failed to load TensorRT engine: {e}", file=sys.stderr)
+                print("!!! Falling back to PyTorch model for self-play.", file=sys.stderr)
+                self.inference_net = self.nnet
+        else:
+            print("TensorRT engine not found. Using PyTorch model for self-play.")
+            self.inference_net = self.nnet
+
+        return self.inference_net
+
+    def _build_and_load_trt_engine(self, checkpoint_path, engine_path):
+        """
+        将指定的PyTorch模型检查点转换为ONNX，然后构建并加载TensorRT引擎。
+
+        Args:
+            checkpoint_path (str): 源PyTorch模型检查点文件(.pth.tar)的路径。
+            engine_path (str): 目标TensorRT引擎文件(.plan)的路径。
+        """
+        print("\n" + "─" * 50)
+        print(f"Building TensorRT Engine from: {checkpoint_path}")
+
+        try:
+            if not os.path.exists(checkpoint_path):
+                raise FileNotFoundError(f"Checkpoint file for conversion not found: {checkpoint_path}")
+
+            # ONNX文件可以作为临时文件生成
+            onnx_path = os.path.splitext(engine_path)[0] + ".onnx"
+
+            # 步骤 1: 将PyTorch模型转换为ONNX
+            print(f"Step 1/3: Converting PyTorch model to ONNX at {onnx_path}...")
+            convert_to_onnx(self.game, self.nnet.args, checkpoint_path, onnx_path)
+
+            # 为trtexec获取优化的批处理大小
+            opt_batch_size = self.args.get('numParallelGames', 8)
+            max_batch_size = self.args.get('batch_size', 64)
+
+            # 步骤 2: 使用trtexec构建TensorRT引擎
+            print(f"Step 2/3: Building TensorRT engine and saving to {engine_path}...")
+            build_command = (
+                f"trtexec --onnx={onnx_path} --saveEngine={engine_path} --fp16 "
+                f"--minShapes=input:1x13x9x9 "
+                f"--optShapes=input:{opt_batch_size}x13x9x9 "
+                f"--maxShapes=input:{max_batch_size}x13x9x9"
+            )
+            print(f"Executing: {build_command}")
+            # 执行命令，并将输出打印到控制台
+            subprocess.run(build_command, shell=True, check=True, stdout=sys.stdout, stderr=sys.stderr)
+
+            # 步骤 3: 加载新的TensorRT引擎以供下次迭代使用
+            print(f"Step 3/3: Loading new TensorRT engine from {engine_path}...")
+            self.inference_net = TensorRTWrapper(self.game, self.nnet.args, engine_path)
+            print("─" * 50)
+            print("TensorRT Engine built and loaded successfully!")
+            print("─" * 50 + "\n")
+
+
+        except Exception as e:
+            print(f"!!! TensorRT engine build failed: {e}", file=sys.stderr)
+            print("!!! Falling back to PyTorch model for self-play.", file=sys.stderr)
+            # 如果构建失败，确保推理网络回退到普通的PyTorch网络
+            if self.inference_net is None:
+                self.inference_net = self.nnet
 
     def _print_board_debug(self, board, round_num, player, action):
         """Helper function to print the board state for debugging during self-play."""
@@ -61,6 +143,8 @@ class Coach:
         pbar = tqdm(total=self.args.max_rounds, desc="Self-Play Batch", leave=False)
         rounds_played = 0
 
+        inference_net = self._get_inference_net()
+
         while not dones.all():
             rounds_played += 1
             if rounds_played > self.args.max_rounds: break
@@ -84,7 +168,7 @@ class Coach:
             mcts_args = katago_cpp_core.MCTSArgs()
             mcts_args.numMCTSSims = num_sims
             mcts_args.cpuct, mcts_args.dirichletAlpha, mcts_args.epsilon, mcts_args.factor_winloss = self.args.cpuct, self.args.dirichletAlpha, self.args.epsilon, self.args.factor_winloss
-            mcts = katago_cpp_core.MCTS(self.game, self.nnet.predict_batch, mcts_args)
+            mcts = katago_cpp_core.MCTS(self.game, inference_net.predict_batch, mcts_args)
 
             seeds = np.random.randint(0, 2 ** 32 - 1, size=len(canonical_boards), dtype=np.uint32)
             all_pis = mcts.getActionProbs(canonical_boards, canonical_hashes, seeds.tolist(), temp=temp)
@@ -147,6 +231,21 @@ class Coach:
         self.initial_net.load_checkpoint(folder=self.args['checkpoint'], filename='initial.pth.tar')
         print("Initial model saved and loaded.")
         sys.stdout.flush()
+
+        source_folder, source_file = self.args.get('load_folder_file', (None, None))
+        if source_folder and source_file:
+            source_checkpoint_path = os.path.join(source_folder, source_file)
+            # 引擎总是保存在当前迭代的checkpoint目录下，名为best.plan
+            target_engine_path = os.path.join(self.args['checkpoint'], 'best.plan')
+
+            # 如果源模型存在，但目标引擎不存在，则立即构建
+            if os.path.exists(source_checkpoint_path) and not os.path.exists(target_engine_path):
+                print("─" * 50)
+                print(f"Found starting checkpoint '{source_checkpoint_path}' without a pre-built TensorRT engine.")
+                print("Building engine before the first iteration...")
+                # convert_to_onnx会从给定的路径加载模型，所以我们不需要手动加载到self.nnet
+                self._build_and_load_trt_engine(source_checkpoint_path, target_engine_path)
+                print("─" * 50)
 
         for i in range(1, self.args.get('numIters', 100) + 1):
             print(f'------ ITERATION {i} ------')
@@ -223,7 +322,7 @@ class Coach:
             nnet_mcts = katago_cpp_core.MCTS(self.game, self.nnet.predict_batch, mcts_args)
             pnet_mcts = katago_cpp_core.MCTS(self.game, self.pnet.predict_batch, mcts_args)
             arena = Arena(nnet_mcts, pnet_mcts, self.game, self.args)
-            nwins, pwins, draws = arena.play_games_batch(self.args.get('arenaCompare', 40))
+            nwins, pwins, draws,_,_ = arena.play_games_batch(self.args.get('arenaCompare', 40))
 
             self.writer.add_scalar('Arena/NewNetWins', nwins, i)
             self.writer.add_scalar('Arena/PrevNetWins', pwins, i)
@@ -241,6 +340,7 @@ class Coach:
                 print('ACCEPTING NEW MODEL')
                 self.nnet.save_checkpoint(folder=self.args['checkpoint'], filename=self.get_checkpoint_file(i))
                 self.nnet.save_checkpoint(folder=self.args['checkpoint'], filename='best.pth.tar')
+                self._build_and_load_trt_engine()
 
     def get_checkpoint_file(self, iteration):
         return f'checkpoint_{iteration}.pth.tar'
