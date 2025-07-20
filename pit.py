@@ -1,23 +1,36 @@
-# pit.py
-# 运行此文件以启动具有悔棋和动态AI参数调整功能的高级GUI。
-
 import pygame
 import numpy as np
 import sys
 import os
-import torch
 import math
 import threading
 import katago_cpp_core
-from nn_wrapper import NNetWrapper
-from nn_model import NNet
+import onnxruntime
+
+# --- 新增: 尝试解决Windows控制台乱码问题 ---
+# 如果在Windows上运行，尝试设置控制台输出编码为UTF-8
+if sys.platform == "win32":
+    try:
+        os.system("chcp 65001 > nul")
+    except Exception as e:
+        print(f"Warning: Failed to set console to UTF-8. {e}")
+
+
+def resource_path(relative_path):
+    """ 获取资源的绝对路径, 无论是开发模式还是 PyInstaller 打包后 """
+    try:
+        base_path = sys._MEIPASS
+    except Exception:
+        base_path = os.path.abspath(".")
+    return os.path.join(base_path, relative_path)
+
 
 # --- 颜色定义 ---
 C_BLACK = (0, 0, 0)
 C_WHITE = (255, 255, 255)
 C_GRID = (50, 50, 50)
-C_PLAYER_1 = (220, 50, 50)
-C_PLAYER_2 = (50, 100, 220)
+C_PLAYER_1 = (220, 50, 50)  # 红方
+C_PLAYER_2 = (50, 100, 220)  # 蓝方
 C_P1_CONTROL = (255, 224, 224)
 C_P2_CONTROL = (224, 224, 255)
 C_BUTTON = (100, 100, 100)
@@ -26,6 +39,7 @@ C_BUTTON_TEXT = (255, 255, 255)
 C_INFO_TEXT = (30, 30, 30)
 C_INPUT_BOX_ACTIVE = (150, 150, 200)
 C_INPUT_BOX_INACTIVE = (200, 200, 200)
+C_MOVE_LOG_BG = (240, 240, 240)  # 行棋记录背景色
 
 # --- 布局和游戏参数 ---
 BOARD_SIZE = 9
@@ -34,7 +48,8 @@ CELL_SIZE = 60
 MARGIN = 40
 BOARD_DIM = BOARD_SIZE * CELL_SIZE
 INFO_PANEL_WIDTH = 300
-WINDOW_WIDTH = BOARD_DIM + MARGIN * 2 + INFO_PANEL_WIDTH
+MOVE_LOG_PANEL_WIDTH = 180
+WINDOW_WIDTH = BOARD_DIM + MARGIN * 2 + INFO_PANEL_WIDTH + MOVE_LOG_PANEL_WIDTH
 WINDOW_HEIGHT = BOARD_DIM + MARGIN * 2
 PIECE_RADIUS = CELL_SIZE // 2 - 4
 
@@ -44,19 +59,77 @@ class dotdict(dict):
         return self[name]
 
 
+model_path = resource_path('checkpoint')
+
 args = dotdict({
     'num_channels': 13,
     'num_filters': 128,
     'num_residual_blocks': 8,
     'cpuct': 1.0,
     'epsilon': 0,
-    'checkpoint': './checkpoint/',
-    'load_model_file': 'best.pth.tar',
+    'checkpoint': f'{model_path}',
+    'load_model_file': 'best.onnx',
 })
 
 
-class Button:
+# --- 最终版: 智能选择硬件加速的ONNX包装器 ---
+class SmartONNXWrapper:
+    """
+    一个智能的ONNX包装器，能自动检测并选择最佳的可用硬件加速方案。
+    优先级: TensorRT > CUDA > CPU.
+    """
 
+    def __init__(self, game, args, model_path):
+        self.game = game
+        self.args = args
+        self.board_x, self.board_y = game.getBoardSize()
+        self.action_size = game.getActionSize()
+
+        if not os.path.exists(model_path):
+            raise FileNotFoundError(f"ONNX model file not found at: {model_path}")
+
+        # --- 核心改动: 智能选择Provider ---
+        available_providers = onnxruntime.get_available_providers()
+        preferred_providers = [
+            ('TensorrtExecutionProvider', 'TensorRT'),
+            ('CUDAExecutionProvider', 'CUDA'),
+            ('CPUExecutionProvider', 'CPU')
+        ]
+
+        chosen_provider = None
+        for provider, name in preferred_providers:
+            if provider in available_providers:
+                try:
+                    self.session = onnxruntime.InferenceSession(model_path, providers=[provider])
+                    chosen_provider = name
+                    print(f"Successfully initialized ONNX session with {name}ExecutionProvider.")
+                    break
+                except Exception as e:
+                    print(f"Failed to initialize with {name}ExecutionProvider: {e}")
+                    print(f"Falling back to the next available provider...")
+
+        if chosen_provider is None:
+            raise RuntimeError("Could not initialize ONNX Runtime with any available providers.")
+
+        self.input_name = self.session.get_inputs()[0].name
+        self.output_names = [output.name for output in self.session.get_outputs()]
+        print(f"ONNX model loaded successfully using {chosen_provider}.")
+
+    def predict_batch(self, boards):
+        reshaped_boards = []
+        for board in boards:
+            reshaped_board = np.array(board, dtype=np.float32).reshape(
+                self.args.num_channels, self.board_x, self.board_y
+            )
+            reshaped_boards.append(reshaped_board)
+
+        boards_batch_np = np.stack(reshaped_boards)
+        ort_inputs = {self.input_name: boards_batch_np}
+        return self.session.run(self.output_names, ort_inputs)
+
+
+# Button 和 TextInputBox 类保持不变
+class Button:
     def __init__(self, rect, text, callback):
         self.rect = pygame.Rect(rect)
         self.text = text
@@ -77,8 +150,6 @@ class Button:
 
 
 class TextInputBox:
-    """一个简单的文本输入框类，支持整数和小数"""
-
     def __init__(self, rect, initial_text="", allow_float=False):
         self.rect = pygame.Rect(rect)
         self.text = initial_text
@@ -104,20 +175,20 @@ class TextInputBox:
 
 
 class GameGUI:
-
     def __init__(self):
         pygame.init()
-        pygame.display.set_caption("泡姆棋")
+        pygame.display.set_caption("泡姆棋 (ONNX版 v3 - Auto-Detect)")
         self.screen = pygame.display.set_mode((WINDOW_WIDTH, WINDOW_HEIGHT))
         self.font_info = pygame.font.SysFont("simhei", 24)
         self.font_button = pygame.font.SysFont("simhei", 20)
         self.font_label = pygame.font.SysFont("simhei", 18)
-
+        self.font_move_log = pygame.font.SysFont("simhei", 16)
         self.game_state = 'MENU'
         self.game_mode = None
         self.game_over = True
         self.game_history = []
-
+        self.last_move_action = None
+        self.move_log_scroll_offset = 0
         self.analysis_data = None
         self.show_analysis = False
         self.is_ai_thinking = False
@@ -125,7 +196,6 @@ class GameGUI:
         self.is_analysis_running = False
         self.analysis_result = None
         self.analysis_thread = None
-
         self.clock = pygame.time.Clock()
         self._initialize_neural_net()
         self._create_ui_elements()
@@ -133,13 +203,15 @@ class GameGUI:
     def _initialize_neural_net(self):
         self.game_core = katago_cpp_core.Game(BOARD_SIZE, MAX_ROUNDS)
         try:
-            self.nnet = NNetWrapper(self.game_core, NNet, args)
-            self.nnet.load_checkpoint(args.checkpoint, args.load_model_file)
-            print("神经网络模型加载成功。")
-        except FileNotFoundError:
-            print(f"错误：找不到模型文件 {os.path.join(args.checkpoint, args.load_model_file)}")
+            model_full_path = os.path.join(args.checkpoint, args.load_model_file)
+            # --- 修改: 使用最终的智能包装器 ---
+            self.nnet = SmartONNXWrapper(self.game_core, args, model_full_path)
+        except Exception as e:
+            print(f"错误：加载ONNX模型失败: {e}")
+            # 可以在这里显示一个Pygame错误窗口
             sys.exit(1)
 
+    # 其余的 GameGUI 代码与上一版完全相同，无需修改
     def _create_ui_elements(self):
         panel_x = BOARD_DIM + MARGIN * 2
         self.menu_buttons = [
@@ -148,17 +220,14 @@ class GameGUI:
             Button((panel_x + 50, 290, 200, 50), "执白 vs AI", lambda: self.start_game('P_vs_AI_White')),
             Button((panel_x + 50, 360, 200, 50), "AI vs AI", lambda: self.start_game('AI_vs_AI')),
         ]
-
-        # 修复UI重叠：调整按钮和输入框的Y坐标
         self.game_buttons = [
             Button((panel_x + 50, 320, 200, 40), "悔棋", self.undo_move),
             Button((panel_x + 50, 370, 200, 40), "切换分析显示", self.toggle_analysis),
             Button((panel_x + 50, 420, 200, 40), "返回菜单", self.go_to_menu)
         ]
-
         self.sims_move_input = TextInputBox((panel_x + 160, 490, 90, 30), "2000")
         self.sims_anal_input = TextInputBox((panel_x + 160, 530, 90, 30), "200")
-        self.temp_input = TextInputBox((panel_x + 160, 570, 90, 30), "1.0", allow_float=True)  # 允许输入小数
+        self.temp_input = TextInputBox((panel_x + 160, 570, 90, 30), "1.0", allow_float=True)
         self.input_boxes = [self.sims_move_input, self.sims_anal_input, self.temp_input]
 
     def start_game(self, mode):
@@ -174,6 +243,8 @@ class GameGUI:
         self.ai_move_result = None
         self.is_analysis_running = False
         self.analysis_result = None
+        self.last_move_action = None
+        self.move_log_scroll_offset = 0
         print(f"游戏开始，模式: {mode}")
         if self.show_analysis:
             self.run_deep_analysis()
@@ -185,46 +256,28 @@ class GameGUI:
         self.game_over = True
 
     def undo_move(self):
-        """智能悔棋功能"""
-        if self.is_ai_thinking:
-            print("无法在AI思考时悔棋。")
-            return
-
-        # 决定悔棋步数
+        if self.is_ai_thinking: return
         undo_steps = 1
         is_p_vs_ai = self.game_mode in ['P_vs_AI_Black', 'P_vs_AI_White']
         is_human_turn_now = (self.game_mode == 'P_vs_AI_Black' and self.current_player == 1) or \
                             (self.game_mode == 'P_vs_AI_White' and self.current_player == -1)
-
         if is_p_vs_ai and is_human_turn_now and len(self.game_history) >= 2:
             undo_steps = 2
+        if len(self.game_history) < undo_steps: return
 
-        if len(self.game_history) < undo_steps:
-            print(f"历史记录不足，无法悔棋 {undo_steps} 步。")
-            return
-
-        print(f"执行悔棋 {undo_steps} 步...")
-
-        # 弹出相应步数
         for _ in range(undo_steps):
             self.game_history.pop()
 
-        # 恢复到悔棋后的最新状态
         if self.game_history:
             last_state = self.game_history[-1]
-            prev_state = self.game_history.pop()  # 再次弹出以获取该状态，之后再添加回去
-            self.board = prev_state['board']
-            self.hash = prev_state['hash']
-            self.current_player = prev_state['player']
-            # 重新执行这一步，以确保历史记录的连续性
-            self.perform_move(prev_state['last_action'])
-
-        else:  # 如果悔棋到开局
+            self.board = last_state['board'].copy()
+            self.hash = last_state['hash']
+            self.current_player = last_state['player']
+            self.last_move_action = last_state['last_action']
+        else:
             self.start_game(self.game_mode)
-            # 为了避免调用两次run_deep_analysis，我们在这里直接返回
             return
 
-        print("悔棋成功。")
         if self.show_analysis:
             self.run_deep_analysis()
         else:
@@ -254,9 +307,7 @@ class GameGUI:
         canonical_board, canonical_hash = self.game_core.getCanonicalForm(self.board, self.hash, self.current_player)
         seeds = np.random.randint(0, 2 ** 32 - 1, size=1, dtype=np.uint32)
         pi = mcts_anal.getActionProbs([canonical_board], [canonical_hash], seeds.tolist(), temp=1)[0]
-        canonical_board_tensor = torch.FloatTensor(canonical_board).contiguous().to(self.nnet.device)
-        batch = canonical_board_tensor.unsqueeze(0).cpu()
-        _, v, score, score_var, ownership = self.nnet.predict_batch(batch)
+        _, v, score, score_var, ownership = self.nnet.predict_batch([canonical_board])
         analysis_dict = {
             'pi': pi, 'v': (v[0][0] + 1) / 2, 'score': score[0][0],
             'score_var': score_var[0][0], 'ownership': ownership[0][0]
@@ -266,8 +317,7 @@ class GameGUI:
         self.analysis_result = analysis_dict
 
     def run_deep_analysis(self):
-        if self.is_analysis_running or self.game_over or self.game_state != 'PLAYING':
-            return
+        if self.is_analysis_running or self.game_over or self.game_state != 'PLAYING': return
         self.analysis_data = None
         self.is_analysis_running = True
         self.analysis_result = None
@@ -286,19 +336,26 @@ class GameGUI:
         for event in pygame.event.get():
             if event.type == pygame.QUIT:
                 pygame.quit(), sys.exit()
+
+            if event.type == pygame.MOUSEWHEEL:
+                self.move_log_scroll_offset -= event.y
+                max_scroll = max(0, len(self.game_history) - 15)
+                self.move_log_scroll_offset = max(0, min(self.move_log_scroll_offset, max_scroll))
+
             active_buttons = self.menu_buttons if self.game_state == 'MENU' else self.game_buttons
             for btn in active_buttons:
                 btn.handle_event(event)
             for box in self.input_boxes:
                 box.handle_event(event)
+
             is_human_turn = (self.game_mode == 'P_vs_P') or \
                             (self.game_mode == 'P_vs_AI_Black' and self.current_player == 1) or \
                             (self.game_mode == 'P_vs_AI_White' and self.current_player == -1)
             if self.game_state == 'PLAYING' and is_human_turn and not self.is_ai_thinking:
                 if event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
-                    clicked_on_ui = any(btn.rect.collidepoint(event.pos) for btn in self.game_buttons) or \
-                                    any(box.rect.collidepoint(event.pos) for box in self.input_boxes)
-                    if not clicked_on_ui:
+                    info_panel_rect = pygame.Rect(BOARD_DIM + MARGIN * 2, 0, INFO_PANEL_WIDTH + MOVE_LOG_PANEL_WIDTH,
+                                                  WINDOW_HEIGHT)
+                    if not info_panel_rect.collidepoint(event.pos):
                         self.handle_board_click(event.pos)
 
     def update_game(self):
@@ -335,6 +392,7 @@ class GameGUI:
         self.draw_board_and_pieces()
         if self.show_analysis and self.analysis_data: self.draw_analysis_overlay()
         self.draw_side_panel()
+        self.draw_move_history_panel()
 
     def draw_board_and_pieces(self):
         board_reshaped = self.board.reshape(13, BOARD_SIZE, BOARD_SIZE)
@@ -357,6 +415,11 @@ class GameGUI:
                     pygame.draw.circle(self.screen, C_PLAYER_1, center, PIECE_RADIUS)
                 elif board_reshaped[1, r, c] == 1.0:
                     pygame.draw.circle(self.screen, C_PLAYER_2, center, PIECE_RADIUS)
+
+        if self.last_move_action is not None:
+            r, c = self.last_move_action // BOARD_SIZE, self.last_move_action % BOARD_SIZE
+            center = (MARGIN + c * CELL_SIZE + CELL_SIZE // 2, MARGIN + r * CELL_SIZE + CELL_SIZE // 2)
+            pygame.draw.circle(self.screen, C_WHITE, center, PIECE_RADIUS * 0.5, width=2)
 
     def draw_analysis_overlay(self):
         if not self.analysis_data: return
@@ -416,8 +479,6 @@ class GameGUI:
             self.screen.blit(self.font_info.render(analysis_title, True, C_INFO_TEXT), (panel_x + 20, 200))
             for i, text in enumerate(analysis_texts):
                 self.screen.blit(self.font_info.render(text, True, C_INFO_TEXT), (panel_x + 20, 235 + i * 35))
-
-        # 修复UI重叠：调整AI参数和按钮的Y坐标
         y_offset = 460
         self.screen.blit(self.font_info.render("--- AI 参数设置 ---", True, C_INFO_TEXT), (panel_x + 20, y_offset))
         y_offset += 35
@@ -432,10 +493,39 @@ class GameGUI:
         self.screen.blit(self.font_label.render("模拟次数 (分析)", True, C_INFO_TEXT), (panel_x + 20, y_offset + 5))
         self.sims_anal_input.rect.y = y_offset
         self.sims_anal_input.draw(self.screen, self.font_label)
-
-
-
         for btn in self.game_buttons: btn.draw(self.screen, self.font_button)
+
+    def draw_move_history_panel(self):
+        panel_x = BOARD_DIM + MARGIN * 2 + INFO_PANEL_WIDTH
+        panel_rect = pygame.Rect(panel_x, 0, MOVE_LOG_PANEL_WIDTH, WINDOW_HEIGHT)
+        pygame.draw.rect(self.screen, C_MOVE_LOG_BG, panel_rect)
+        pygame.draw.line(self.screen, C_GRID, (panel_x, 0), (panel_x, WINDOW_HEIGHT), 2)
+        title_surf = self.font_info.render("行棋记录", True, C_BLACK)
+        self.screen.blit(title_surf, (panel_x + 30, 20))
+        y_offset = 60
+        visible_moves = self.game_history[self.move_log_scroll_offset:]
+        for i, move_data in enumerate(visible_moves):
+            move_number = self.move_log_scroll_offset + i + 1
+            player = move_data['player']
+            action = move_data['last_action']
+            player_char = "红" if player == 1 else "蓝"
+            player_color = C_PLAYER_1 if player == 1 else C_PLAYER_2
+            coord_str = self.to_notation(action)
+            log_text = f"{move_number:>3}. {player_char}: {coord_str}"
+            text_surf = self.font_move_log.render(log_text, True, C_BLACK)
+            text_rect = text_surf.get_rect(topleft=(panel_x + 15, y_offset))
+            pygame.draw.circle(self.screen, player_color, (text_rect.left - 8, text_rect.centery), 4)
+            self.screen.blit(text_surf, text_rect)
+            y_offset += 22
+            if y_offset > WINDOW_HEIGHT - 20:
+                break
+
+    def to_notation(self, action):
+        if action is None: return ""
+        r, c = action // BOARD_SIZE, action % BOARD_SIZE
+        col_char = chr(ord('A') + c + (1 if c >= 8 else 0))
+        row_char = str(BOARD_SIZE - r)
+        return f"{col_char}{row_char}"
 
     def handle_board_click(self, pos):
         if self.game_over: return
@@ -468,13 +558,13 @@ class GameGUI:
         threading.Thread(target=self._ai_move_task, daemon=True).start()
 
     def perform_move(self, action):
-        # 保存当前状态到历史记录，用于悔棋
         self.game_history.append({
             'board': self.board.copy(),
             'hash': self.hash,
             'player': self.current_player,
-            'last_action': action  # 保存上一步的动作，用于悔棋后恢复
+            'last_action': action
         })
+        self.last_move_action = action
         next_board_list, next_player, next_hash = self.game_core.getNextState(self.board, self.current_player, action)
         self.board = np.array(next_board_list, dtype=np.float32)
         self.current_player = next_player
@@ -486,6 +576,7 @@ class GameGUI:
             self.is_analysis_running = False
         if self.show_analysis and not self.game_over:
             self.run_deep_analysis()
+        self.move_log_scroll_offset = max(0, len(self.game_history) - 15)
 
 
 if __name__ == '__main__':

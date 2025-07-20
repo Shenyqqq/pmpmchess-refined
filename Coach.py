@@ -340,7 +340,9 @@ class Coach:
                 print('ACCEPTING NEW MODEL')
                 self.nnet.save_checkpoint(folder=self.args['checkpoint'], filename=self.get_checkpoint_file(i))
                 self.nnet.save_checkpoint(folder=self.args['checkpoint'], filename='best.pth.tar')
-                self._build_and_load_trt_engine()
+                best_ckpt_path = os.path.join(self.args['checkpoint'], 'best.pth.tar')
+                engine_path = os.path.join(self.args['checkpoint'], 'best.plan')
+                self._build_and_load_trt_engine(best_ckpt_path, engine_path)
 
     def get_checkpoint_file(self, iteration):
         return f'checkpoint_{iteration}.pth.tar'
