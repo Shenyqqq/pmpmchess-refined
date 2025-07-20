@@ -90,20 +90,30 @@ Pmpmchess-Refined 架构不仅更强大，而且效率也显著提高。
 要训练您自己的模型或修改代码，您需要从源码构建项目。
 
 1.  **克隆仓库:**
-    ` bash     git clone https://github.com/Shenyqqq/pmpmchess-refined.git     cd pmpmchess-refined      `
+    ` bash     
+    git clone https://github.com/Shenyqqq/pmpmchess-refined.git     
+    cd pmpmchess-refined      `
 2.  **创建虚拟环境:**
-    ` bash     python -m venv venv     # 在 Windows 上激活     .\venv\Scripts\activate     # 在 macOS/Linux 上激活     # source venv/bin/activate      `
+    ` bash     
+    python -m venv venv     # 在 Windows 上激活     
+    .\venv\Scripts\activate     # 在 macOS/Linux 上激活     
+    # source venv/bin/activate      `
 3.  **安装依赖:**
-    ` bash     pip install -r requirements.txt      `
+    ` bash    
+    pip install -r requirements.txt      `
 4.  **编译并安装 C++ 引擎:**
-    ` bash     python setup.py build_ext     python setup.py install      `
+    ` bash     
+    python setup.py build_ext     
+    python setup.py install      `
 
 ## 使用方法
 
   \* **训练新模型:**
-    ` bash     python main.py      `
+    ` bash     
+    python main.py      `
   \* **与 AI 对战:**
-    ` bash     python pit.py      `
+    ` bash     
+    python pit.py      `
 
 ## 项目结构
 
