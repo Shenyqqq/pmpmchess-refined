@@ -27,7 +27,7 @@ Here's a detailed breakdown of the rules:
     It's simple! When the game ends (all 50 turns are used up), the player who has claimed more territory squares is the winner.
 
 ## Demonstration
-![gif](https://raw.githubusercontent.com/Shenyqqq/pmpmchess-refined/master/gif/1.gif)
+![gif](https://github.com/Shenyqqq/pmpmchessAI-refined/blob/master/gif/1.gif)
 
 ## Key Architectural Upgrades
 
