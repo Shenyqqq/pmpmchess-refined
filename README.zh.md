@@ -27,7 +27,7 @@ Pmpmchess-Refined 是针对 Pmpmchess 游戏开发的最先进的 AI，它完全
         非常简单！当游戏结束时（50 回合全部用完），占领了更多领土方格的玩家即为获胜者。
 
 ## 演示
-![gif](https://raw.githubusercontent.com/Shenyqqq/pmpmchess-refined/master/gif/1.gif)
+![gif](https://github.com/Shenyqqq/pmpmchessAI-refined/blob/master/gif/1.gif)
 ## 关键架构升级
 
 本项目对原有的 pmpmchessAI 进行了根本性的重构。以下的增强功能构成了其卓越性能和智能的核心。
