@@ -139,6 +139,9 @@ To train your own models or modify the code, you'll need to build the project fr
 ├── Coach.py            # Implements the main training loop logic.
 ├── Arena.py            # Pits two networks against each other to evaluate performance.
 ├── nn_model.py         # Defines the neural network architecture using PyTorch.
+├── onnx_converter.py   # Convert the pth model to onnx model
+├── compare.py          # Compare the ability of 2 specified models
+├── trt_wrapper.py      # Load trt as model reasoning engine, replace the nn_wrapper.py
 └── nn_wrapper.py       # A wrapper for the NN to handle data transformations and predictions.
 ```
 
